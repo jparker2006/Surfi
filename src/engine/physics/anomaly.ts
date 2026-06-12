@@ -13,8 +13,15 @@ import { consts } from './constants'
 //   b. velocity along the course spine goes negative: backward drift
 //   c. two or more simultaneous clip planes: a corner/crease
 //   d. start-solid: the hull began a move already penetrating a brush
+//   e. stuck-high: arrested high on a face near the ridge apex, where the bevel
+//      redirect's faceMaxD1 gate stops firing (the apex coverage hole)
+//   f. stuck-on-steep: arrested against a face whose normal points up-course
+//      (a wall facing back into the player, stealing along-course speed)
+// e and f are evaluated before a..d so the more specific apex/steep stick is the
+// label when one fires; they are what humans hit and the clean/sloppy bots miss.
 
 const RING = 120
+const SURF_NORMAL_Y = 0.7
 const MAX_DUMPS = 60
 // after a trigger, wait this many ticks before arming again, so a single trap
 // does not emit a dump every tick for its whole duration
@@ -40,6 +47,12 @@ interface Frame {
   grounded: boolean
   dist: number
   alongVel: number
+  // the steep contact normal the surfer clipped against this tick (zero length
+  // if none), and how the trace classified it
+  cnx: number; cny: number; cnz: number
+  cbevel: boolean; cseam: boolean
+  // height of the rider below the spine apex at this tick (apexY - py)
+  belowApex: number
 }
 
 function makeFrame(): Frame {
@@ -50,6 +63,7 @@ function makeFrame(): Frame {
     planeCount: 0, planeN: new Float64Array(PLANES_PER_FRAME * 3),
     startSolid: false, allSolid: false, horizBefore: 0, horizAfter: 0,
     stopReason: '', onSurfPlane: false, grounded: false, dist: 0, alongVel: 0,
+    cnx: 0, cny: 0, cnz: 0, cbevel: false, cseam: false, belowApex: 0,
   }
 }
 
@@ -69,10 +83,14 @@ export interface AnomalyFrame {
   grounded: boolean
   dist: number
   alongVel: number
+  contactNormal: [number, number, number]
+  contactBevel: boolean
+  contactSeam: boolean
+  belowApex: number
 }
 
 export interface AnomalyDump {
-  trigger: 'speeddrop' | 'backdrift' | 'multiplane' | 'startsolid'
+  trigger: 'speeddrop' | 'backdrift' | 'multiplane' | 'startsolid' | 'stuckhigh' | 'stuckonsteep'
   seed: number
   atTickId: number
   // dist and alongVel at the trigger, the headline numbers for triage
@@ -90,7 +108,7 @@ export class AnomalyRecorder {
   // running tallies for the sweep gate, per detector. eyeclip counts ticks
   // where the camera eye sits inside (or within the near plane of) brush
   // geometry: the cause of the flash on the old pinned-against-a-wall trap.
-  readonly counts = { speeddrop: 0, backdrift: 0, multiplane: 0, startsolid: 0, eyeclip: 0 }
+  readonly counts = { speeddrop: 0, backdrift: 0, multiplane: 0, startsolid: 0, stuckhigh: 0, stuckonsteep: 0, eyeclip: 0 }
 
   private readonly ring: Frame[] = []
   private head = 0
@@ -98,6 +116,9 @@ export class AnomalyRecorder {
   private tickId = 0
   private spineIndex = 0
   private cooldown = 0
+  // separate cooldown for the apex/steep trap dumps, so they capture plane
+  // configs without disturbing the a..d dump cadence
+  private trapCooldown = 0
 
   constructor() {
     for (let i = 0; i < RING; i++) this.ring.push(makeFrame())
@@ -110,11 +131,14 @@ export class AnomalyRecorder {
     this.tickId = 0
     this.spineIndex = 0
     this.cooldown = 0
+    this.trapCooldown = 0
     this.dumps.length = 0
     this.counts.speeddrop = 0
     this.counts.backdrift = 0
     this.counts.multiplane = 0
     this.counts.startsolid = 0
+    this.counts.stuckhigh = 0
+    this.counts.stuckonsteep = 0
     this.counts.eyeclip = 0
   }
 
@@ -154,6 +178,9 @@ export class AnomalyRecorder {
     this.spineIndex = prog.index
     const dir = gen.spineDirAt(prog.index)
     const alongVel = controller.vel.x * dir.x + controller.vel.z * dir.z
+    // height of the rider below the spine apex (the spine rides the ridge crest)
+    const apex = gen.spineAt(prog.dist)
+    const belowApex = apex ? apex.y - controller.pos.y : 1e9
 
     const f = this.ring[this.head]
     f.tickId = this.tickId
@@ -171,6 +198,9 @@ export class AnomalyRecorder {
     f.horizBefore = d.horizBefore; f.horizAfter = d.horizAfter
     f.stopReason = d.stopReason; f.onSurfPlane = d.onSurfPlane; f.grounded = d.grounded
     f.dist = prog.dist; f.alongVel = alongVel
+    f.cnx = d.contactNormal.x; f.cny = d.contactNormal.y; f.cnz = d.contactNormal.z
+    f.cbevel = d.contactBevel; f.cseam = d.contactSeam
+    f.belowApex = belowApex
 
     this.head = (this.head + 1) % RING
     if (this.filled < RING) this.filled++
@@ -180,14 +210,44 @@ export class AnomalyRecorder {
     // the trap detectors and their cooldown
     if (this.eyeClipped(controller, gen)) this.counts.eyeclip++
 
+    // "in contact" means touching a steep face or accumulating a clip plane.
+    // Flat ground is excluded so ordinary friction never counts as stuck.
+    const surfContact = d.onSurfPlane || d.planeCount > 0
+
+    // e + f: the apex/steep sticks humans hit. Tallied every tick (like eyeclip)
+    // and given their own dump cadence, so they never disturb the a..d counts the
+    // existing clean/sloppy gates read. "Arrested" is a real >15% one-tick speed
+    // loss while the rider was moving.
+    const cLenSq =
+      d.contactNormal.x * d.contactNormal.x +
+      d.contactNormal.y * d.contactNormal.y +
+      d.contactNormal.z * d.contactNormal.z
+    const arrested = d.horizBefore > 150 && d.horizAfter < d.horizBefore * 0.85
+    let trap: 'stuckonsteep' | 'stuckhigh' | '' = ''
+    if (
+      surfContact && arrested && cLenSq > 0.5 && d.contactNormal.y < SURF_NORMAL_Y &&
+      d.contactNormal.x * dir.x + d.contactNormal.z * dir.z < -0.15
+    ) {
+      // f. clipped against a face whose normal points back up-course
+      trap = 'stuckonsteep'
+    } else if (surfContact && arrested && belowApex < 110 && alongVel < 60) {
+      // e. arrested high on the face near the ridge apex
+      trap = 'stuckhigh'
+    }
+    if (trap) {
+      this.counts[trap]++
+      if (this.trapCooldown === 0) {
+        this.emit(trap, alongVel, d.horizBefore, d.horizAfter, prog.dist)
+        this.trapCooldown = COOLDOWN
+      }
+    }
+    if (this.trapCooldown > 0) this.trapCooldown--
+
     if (this.cooldown > 0) {
       this.cooldown--
       return
     }
 
-    // "in contact" means touching a steep face or accumulating a clip plane.
-    // Flat ground is excluded so ordinary friction never counts as stuck.
-    const surfContact = d.onSurfPlane || d.planeCount > 0
     let trigger: AnomalyDump['trigger'] | '' = ''
 
     // a. stuck: a sharp one-tick speed loss on a face that leaves the player
@@ -248,6 +308,10 @@ export class AnomalyRecorder {
         grounded: f.grounded,
         dist: f.dist,
         alongVel: f.alongVel,
+        contactNormal: [f.cnx, f.cny, f.cnz],
+        contactBevel: f.cbevel,
+        contactSeam: f.cseam,
+        belowApex: f.belowApex,
       })
     }
     this.dumps.push({

@@ -28,6 +28,17 @@
 //   it is reproduced end to end with the deterministic (seeded) sloppy bot:
 //   buggy code drifts backward here, the fix keeps the player fast and out of
 //   the pocket. Signature: zero backdrift detector events across the run.
+//
+//   CASE D (seed 38): the apex/steep-side stick humans hit and the clean and
+//   sloppy bots miss (the climber bot in climber-bot.js finds it). A rider
+//   surfing high near the ridge drops onto the crest from one airborne tick and
+//   the trace returns the apex edge bevel [0, 0.37, 0.93] (the SAME bevel family
+//   as CASE A) as a head-on wall, collapsing along-course speed 1355 -> 358 in
+//   one tick. CASE A's free fall is caught by the old redirect because the hull
+//   starts within 0.5u of the real face (faceMaxD1 <= 0.5); here the hull drops
+//   from above so faceMaxD1 > 0.5 and the old guard let the bevel through. A
+//   fixed start state plus the recorded inputs reproduce it every run.
+//   Signature: along-course speed collapses while horizontal speed stays high.
 
 import { sloppyBotSource } from './sloppy-bot.js'
 import { botSource } from './bot.js'
@@ -56,6 +67,24 @@ const CASE_A = {
 // CASE B: the seed that drifts backward end to end under the deterministic
 // sloppy bot on buggy code.
 const CASE_B_SEED = 39
+
+// CASE D data: the captured pre-trap state (full precision) four ticks before
+// the apex bevel hit on seed 38, plus the recorded inputs that ride into it.
+const CASE_D = {
+  name: 'seed38-apex-bevel-wall',
+  seed: 38,
+  trapDist: 7606,
+  start: {
+    pos: [186.5289135220334, -1249.8902607418145, -7627.741650242171],
+    vel: [707.3912648559774, -307.5257269070761, -1147.9874285909266],
+  },
+  inputs: [
+    { l: 1, y: -0.5522470746773309 },
+    { l: 1, y: -0.54832107507576 },
+    { l: 1, y: -0.5444278182763219 },
+    { l: 1, y: -0.5223185974674989 },
+  ],
+}
 
 function frameOf(inp) {
   return {
@@ -116,6 +145,21 @@ export function runTrapRepro() {
     ratio: Math.round((endA / peakA) * 100) / 100,
     trapReproduced: collapsedA,
     pass: !collapsedA,
+  })
+
+  // CASE D: a fixed replay of the apex bevel landing. Same assertion as CASE A:
+  // along-course speed must not collapse while horizontal speed is still high.
+  const dd = replay(CASE_D)
+  const peakD = Math.max(...dd.map((f) => f.along))
+  const endD = dd[dd.length - 1].along
+  const collapsedD = endD < 0.5 * peakD
+  results.push({
+    case: CASE_D.name,
+    peakAlong: Math.round(peakD),
+    endAlong: Math.round(endD),
+    ratio: Math.round((endD / peakD) * 100) / 100,
+    trapReproduced: collapsedD,
+    pass: !collapsedD,
   })
 
   // CASE B: end to end. The deterministic sloppy bot on the trapping seed must

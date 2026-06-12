@@ -17,6 +17,9 @@ export interface TraceResult {
   normal: THREE.Vector3
   hit: boolean
   hitBevel: boolean
+  // the chosen contact plane was a seam cap. Diagnostic only (the anomaly
+  // recorder classifies what a rider got stuck against); physics ignores it.
+  hitSeam: boolean
   startSolid: boolean
   allSolid: boolean
 }
@@ -28,6 +31,7 @@ export function createTraceResult(): TraceResult {
     normal: new THREE.Vector3(0, 1, 0),
     hit: false,
     hitBevel: false,
+    hitSeam: false,
     startSolid: false,
     allSolid: false,
   }
@@ -46,6 +50,7 @@ export function traceHull(
   out.fraction = 1
   out.hit = false
   out.hitBevel = false
+  out.hitSeam = false
   out.startSolid = false
   out.allSolid = false
 
@@ -145,21 +150,29 @@ function clipToBrush(
     let chosen = clipPlane
     // Rampbug fix. A bevel plane is not a real surface: it only tightens the
     // swept hull polytope at sharp edges. A seam cap is the flush end face of a
-    // ramp piece. Neither should ever clip a rider's velocity, but at a flush
-    // joint the swept trace can "enter" the brush through one of them and
-    // report it as a head-on wall, stealing surf speed (the contact normal
-    // points across the course). When the sweep started at or under every real
-    // face plane, the rider is on the brush surface and the geometrically
-    // correct contact is the nearest real face, so clip against that instead.
-    // The bevel/seam still bound the sweep fraction; only the clip normal moves.
+    // ramp piece. Neither should ever clip a rider's velocity, but the swept
+    // trace can "enter" the brush through one of them and report it as a head-on
+    // wall, stealing surf speed (the contact normal points across the course).
+    // Whenever the brush has a real face, the geometrically correct contact is
+    // the nearest one, so clip against that instead. The bevel/seam still bounds
+    // the sweep fraction (the hull stops in the right place); only the clip
+    // normal moves to the real surface.
+    //
+    // This used to be gated on faceMaxD1 <= 0.5 (the hull within 0.5u of a real
+    // face, i.e. already on the surface). That missed the apex landing: a rider
+    // surfing high drops onto the ridge from a tick of air, so the hull starts
+    // above the faces (faceMaxD1 > 0.5) and the old guard let an apex edge bevel
+    // through as a wall. Reporting the nearest real face is correct on the
+    // surface and above it (the rider is landing onto that face); the gate is gone.
     const p = planes[chosen]
     const wallLike = p.seam === true || p.bevel === true
-    if (wallLike && faceMaxD1 <= 0.5 && nearestFace >= 0) {
+    if (wallLike && nearestFace >= 0) {
       chosen = nearestFace
     }
     out.fraction = enterFrac
     out.normal.copy(planes[chosen].n)
     out.hit = true
     out.hitBevel = planes[chosen].bevel === true
+    out.hitSeam = planes[chosen].seam === true
   }
 }

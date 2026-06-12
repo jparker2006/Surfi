@@ -44,7 +44,11 @@ ${HSV}
 void main() {
   float hue = uHue + vWorld.y * 0.00035 + (vWorld.x + vWorld.z) * 0.00009;
   float flow = sin((vWorld.x + vWorld.z) * 0.016 - uTime * (1.2 + uIntensity * 7.0));
-  float band = smoothstep(0.45, 0.95, flow);
+  // derivative aware band edges: widen the smoothstep by the per pixel rate of
+  // change of flow so the bands read as a soft glow instead of hard stripes,
+  // and never alias into thin lines at grazing angles down the ramp
+  float w = fwidth(flow) + 0.06;
+  float band = smoothstep(0.45 - w, 0.95 + w, flow);
   vec3 base = hsv(hue, 0.85, uValue * (0.38 + 0.3 * band));
   vec3 vdir = normalize(cameraPosition - vWorld);
   float fres = pow(1.0 - abs(dot(vdir, normalize(vNormal))), 2.2);

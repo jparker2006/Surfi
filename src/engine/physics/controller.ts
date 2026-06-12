@@ -31,6 +31,13 @@ export interface TickDiag {
   stopReason: string
   onSurfPlane: boolean
   grounded: boolean
+  // the last steep (n.y < GROUND_NORMAL_Y) contact normal this tick, the face a
+  // surfer actually clips against, plus what kind of plane it was. The recorder
+  // uses this to classify apex/steep-side sticks. contactNormal is zero length
+  // when no steep contact happened this tick.
+  contactNormal: THREE.Vector3
+  contactBevel: boolean
+  contactSeam: boolean
 }
 
 const MAX_CLIP_PLANES = 5
@@ -82,6 +89,9 @@ export class PlayerController {
     stopReason: '',
     onSurfPlane: false,
     grounded: false,
+    contactNormal: new THREE.Vector3(),
+    contactBevel: false,
+    contactSeam: false,
   }
 
   tick(input: InputFrame, brushes: Brush[], dt: number): void {
@@ -93,6 +103,9 @@ export class PlayerController {
       this.diag.startSolid = false
       this.diag.allSolid = false
       this.diag.horizBefore = Math.hypot(this.vel.x, this.vel.z)
+      this.diag.contactNormal.set(0, 0, 0)
+      this.diag.contactBevel = false
+      this.diag.contactSeam = false
     }
 
     // wishdir: horizontal input direction rotated by view yaw
@@ -214,6 +227,13 @@ export class PlayerController {
       if (this.recording) {
         if (tr.startSolid) this.diag.startSolid = true
         if (tr.allSolid) this.diag.allSolid = true
+        // record the steep contact the surfer clips against (last one wins);
+        // a single-plane stick has exactly one, the offender
+        if (tr.hit && tr.normal.y < GROUND_NORMAL_Y) {
+          this.diag.contactNormal.copy(tr.normal)
+          this.diag.contactBevel = tr.hitBevel
+          this.diag.contactSeam = tr.hitSeam
+        }
       }
 
       if (tr.allSolid) {
