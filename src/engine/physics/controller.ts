@@ -139,7 +139,7 @@ export class PlayerController {
     downEnd.copy(this.pos)
     downEnd.y -= 2
     traceHull(this.pos, downEnd, this.half, brushes, tr)
-    if (tr.hit && !tr.startSolid && tr.normal.y >= GROUND_NORMAL_Y) {
+    if (tr.hit && !tr.startSolid && !tr.hitBevel && tr.normal.y >= GROUND_NORMAL_Y) {
       this.grounded = true
       this.pos.copy(tr.endPos)
     } else {
@@ -151,8 +151,8 @@ export class PlayerController {
   // Port of Source TryPlayerMove: up to 4 swept moves per tick, clipping
   // velocity against each contacted plane, sliding along creases, never
   // losing tangential speed at ramp transitions.
+  // debug only: records the last hard-stop cause, sticky until the next stop
   private tryPlayerMove(brushes: Brush[], dt: number): void {
-    this.stopReason = ''
     let timeLeft = dt
     let numplanes = 0
     originalVel.copy(this.vel)

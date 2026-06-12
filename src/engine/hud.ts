@@ -1,5 +1,13 @@
-// DOM overlay HUD. Two live elements: speedometer (bottom center, the primary
-// physics debugging instrument) and distance (top center).
+// DOM overlay HUD. Two live elements during play: speedometer (bottom center,
+// the primary physics debugging instrument) and distance (top center). Plus
+// the start screen and the death screen.
+
+export interface DeathStats {
+  distance: number
+  peakSpeed: number
+  best: number
+  isNewBest: boolean
+}
 
 export class Hud {
   private readonly speedEl: HTMLDivElement
@@ -16,7 +24,7 @@ export class Hud {
 
     this.distanceEl = document.createElement('div')
     this.distanceEl.className = 'hud-distance'
-    this.distanceEl.textContent = ''
+    this.distanceEl.textContent = '0'
     root.appendChild(this.distanceEl)
 
     this.overlayEl = document.createElement('div')
@@ -40,8 +48,34 @@ export class Hud {
     }
   }
 
-  showOverlay(html: string): void {
-    this.overlayEl.innerHTML = html
+  setHudVisible(on: boolean): void {
+    const v = on ? 'block' : 'none'
+    this.speedEl.style.display = v
+    this.distanceEl.style.display = v
+  }
+
+  showStart(title: string, levelName: string, resume: boolean): void {
+    this.overlayEl.innerHTML = `
+      <h1 class="title">${title}</h1>
+      <p class="level-name">${levelName}</p>
+      <p class="cta">${resume ? 'click to resume' : 'click to surf'}</p>
+      <div class="hint">
+        <p>WASD plus mouse: surf. Strafe into the ramp face to gain speed.</p>
+        <p>Space: jump. R: respawn.</p>
+        <p>Backtick or F3: debug panel.</p>
+      </div>`
+    this.overlayEl.style.display = 'flex'
+  }
+
+  showDeath(stats: DeathStats): void {
+    this.overlayEl.innerHTML = `
+      <h1 class="death-title">wipeout</h1>
+      <div class="stats">
+        <p><span class="stat-label">distance</span><span class="stat-value">${Math.floor(stats.distance)}</span></p>
+        <p><span class="stat-label">peak speed</span><span class="stat-value">${Math.floor(stats.peakSpeed)}</span></p>
+        <p><span class="stat-label">best</span><span class="stat-value">${Math.floor(stats.best)}${stats.isNewBest ? ' &#9733; new' : ''}</span></p>
+      </div>
+      <p class="cta">press any key to drop back in</p>`
     this.overlayEl.style.display = 'flex'
   }
 

@@ -7,6 +7,12 @@ import * as THREE from 'three'
 export interface BrushPlane {
   n: THREE.Vector3
   d: number // dot(n, point on plane)
+  // bevel planes tighten swept-hull traces at sharp edges; they are not real
+  // surfaces and never count as standable ground
+  bevel?: boolean
+  // seam caps: end cross-sections of ramp pieces, flush against a neighbor.
+  // A rider should never be stopped by one; see the rampbug fix in trace.ts
+  seam?: boolean
 }
 
 export interface Brush {
@@ -49,6 +55,45 @@ function orientFaces(brush: Brush): void {
   }
 }
 
+// Bevel planes, the same trick Quake map compilers use. Expanding face planes
+// by hull extents overestimates the Minkowski sum near sharp edges: a steep
+// prism apex grows a phantom solid wedge above the ridge that traps traces.
+// Axial planes plus edge bevels (cross of each edge with each axis) make the
+// expanded polytope tight. Redundant for point queries, required for hulls.
+const AXES = [
+  new THREE.Vector3(1, 0, 0),
+  new THREE.Vector3(0, 1, 0),
+  new THREE.Vector3(0, 0, 1),
+]
+const bevelEdge = new THREE.Vector3()
+const bevelN = new THREE.Vector3()
+
+function addBevelPlanes(brush: Brush): void {
+  const tryAdd = (n: THREE.Vector3): void => {
+    for (const p of brush.planes) {
+      if (p.n.dot(n) > 0.999) return
+    }
+    let d = -Infinity
+    for (const v of brush.verts) d = Math.max(d, n.dot(v))
+    brush.planes.push({ n: n.clone(), d, bevel: true })
+  }
+
+  for (const axis of AXES) {
+    tryAdd(bevelN.copy(axis))
+    tryAdd(bevelN.copy(axis).negate())
+  }
+  for (const [i, j] of brush.edges) {
+    bevelEdge.subVectors(brush.verts[j], brush.verts[i]).normalize()
+    for (const axis of AXES) {
+      bevelN.crossVectors(bevelEdge, axis)
+      if (bevelN.lengthSq() < 1e-6) continue
+      bevelN.normalize()
+      tryAdd(bevelN)
+      tryAdd(bevelN.negate())
+    }
+  }
+}
+
 export function boxBrush(min: THREE.Vector3, max: THREE.Vector3): Brush {
   const verts = [
     new THREE.Vector3(min.x, min.y, min.z), // 0
@@ -83,6 +128,7 @@ export function boxBrush(min: THREE.Vector3, max: THREE.Vector3): Brush {
   ]
   const brush: Brush = { planes, verts, faces, edges, ...boundsOf(verts) }
   orientFaces(brush)
+  addBevelPlanes(brush)
   return brush
 }
 
@@ -133,6 +179,90 @@ export function prismBrush(
   ]
   const brush: Brush = { planes, verts, faces, edges, ...boundsOf(verts) }
   orientFaces(brush)
+  addBevelPlanes(brush)
+  return brush
+}
+
+// Convex hull of a small point set (brute force, generation time only).
+// Used for ramp wedge pieces: consecutive pieces share their exact seam
+// cross-section, so joints are flush and no internal walls are ever exposed.
+export function hullBrush(pts: THREE.Vector3[]): Brush {
+  const EPS = 1e-3
+  const planes: BrushPlane[] = []
+  const faces: number[][] = []
+  const ea = new THREE.Vector3()
+  const eb = new THREE.Vector3()
+
+  for (let i = 0; i < pts.length; i++) {
+    for (let j = i + 1; j < pts.length; j++) {
+      for (let k = j + 1; k < pts.length; k++) {
+        ea.subVectors(pts[j], pts[i])
+        eb.subVectors(pts[k], pts[i])
+        const n = new THREE.Vector3().crossVectors(ea, eb)
+        if (n.lengthSq() < 1e-8) continue
+        n.normalize()
+        let d = n.dot(pts[i])
+        let above = 0
+        let below = 0
+        for (const p of pts) {
+          const dd = n.dot(p) - d
+          if (dd > EPS) above++
+          else if (dd < -EPS) below++
+        }
+        if (above > 0 && below > 0) continue
+        if (above > 0) {
+          n.negate()
+          d = -d
+        }
+        if (planes.some((pl) => pl.n.dot(n) > 0.9999 && Math.abs(pl.d - d) < 0.05)) continue
+
+        // face polygon: points on the plane, ordered around their centroid
+        const on: number[] = []
+        for (let m = 0; m < pts.length; m++) {
+          if (Math.abs(n.dot(pts[m]) - d) <= EPS) on.push(m)
+        }
+        if (on.length < 3) continue
+        const cx = on.reduce((s, m) => s + pts[m].x, 0) / on.length
+        const cy = on.reduce((s, m) => s + pts[m].y, 0) / on.length
+        const cz = on.reduce((s, m) => s + pts[m].z, 0) / on.length
+        const u = ea.copy(pts[on[0]]).sub(new THREE.Vector3(cx, cy, cz)).normalize().clone()
+        const v = new THREE.Vector3().crossVectors(n, u)
+        on.sort((m1, m2) => {
+          const a1 = Math.atan2(
+            (pts[m1].x - cx) * v.x + (pts[m1].y - cy) * v.y + (pts[m1].z - cz) * v.z,
+            (pts[m1].x - cx) * u.x + (pts[m1].y - cy) * u.y + (pts[m1].z - cz) * u.z,
+          )
+          const a2 = Math.atan2(
+            (pts[m2].x - cx) * v.x + (pts[m2].y - cy) * v.y + (pts[m2].z - cz) * v.z,
+            (pts[m2].x - cx) * u.x + (pts[m2].y - cy) * u.y + (pts[m2].z - cz) * u.z,
+          )
+          return a1 - a2
+        })
+        planes.push({ n, d })
+        faces.push(on)
+      }
+    }
+  }
+
+  // edges from face polygon boundaries, deduped
+  const edgeSet = new Set<number>()
+  const edges: [number, number][] = []
+  for (const f of faces) {
+    for (let i = 0; i < f.length; i++) {
+      const a = f[i]
+      const b = f[(i + 1) % f.length]
+      const key = a < b ? a * 64 + b : b * 64 + a
+      if (!edgeSet.has(key)) {
+        edgeSet.add(key)
+        edges.push(a < b ? [a, b] : [b, a])
+      }
+    }
+  }
+
+  const verts = pts.map((p) => p.clone())
+  const brush: Brush = { planes, verts, faces, edges, ...boundsOf(verts) }
+  orientFaces(brush)
+  addBevelPlanes(brush)
   return brush
 }
 

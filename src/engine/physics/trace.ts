@@ -6,12 +6,17 @@ import type { Brush } from './brushes'
 // extent, then clip the center-point ray against the expanded polytope.
 
 const DIST_EPS = 0.03125
+// Sub-epsilon penetration counts as surface contact, not solid. Sliding along
+// a crease (two-face ridge apex) drifts the hull a float-noise distance inside
+// both planes; without this the trace reports allSolid and the player freezes.
+const SOLID_EPS = 0.1
 
 export interface TraceResult {
   fraction: number
   endPos: THREE.Vector3
   normal: THREE.Vector3
   hit: boolean
+  hitBevel: boolean
   startSolid: boolean
   allSolid: boolean
 }
@@ -22,6 +27,7 @@ export function createTraceResult(): TraceResult {
     endPos: new THREE.Vector3(),
     normal: new THREE.Vector3(0, 1, 0),
     hit: false,
+    hitBevel: false,
     startSolid: false,
     allSolid: false,
   }
@@ -39,6 +45,7 @@ export function traceHull(
 ): void {
   out.fraction = 1
   out.hit = false
+  out.hitBevel = false
   out.startSolid = false
   out.allSolid = false
 
@@ -79,6 +86,10 @@ function clipToBrush(
   let clipPlane = -1
   let startOut = false
   let getOut = false
+  // rampbug fix bookkeeping: where the sweep started relative to the brush's
+  // real surface planes (non-seam, non-bevel)
+  let faceMaxD1 = -Infinity
+  let nearestFace = -1
 
   const planes = brush.planes
   for (let i = 0; i < planes.length; i++) {
@@ -92,12 +103,18 @@ function clipToBrush(
     const d2 = n.x * end.x + n.y * end.y + n.z * end.z - dist
 
     if (d2 > 0) getOut = true
-    if (d1 > 0) startOut = true
+    if (d1 > -SOLID_EPS) startOut = true
+
+    if (!planes[i].seam && !planes[i].bevel && d1 > faceMaxD1) {
+      faceMaxD1 = d1
+      nearestFace = i
+    }
 
     // completely in front of this face: no intersection with the brush
     if (d1 > 0 && (d2 >= DIST_EPS || d2 >= d1)) return
     // completely behind this face: does not constrain the sweep
-    if (d1 <= 0 && d2 <= 0) continue
+    if (d1 <= -SOLID_EPS && d2 <= 0) continue
+    if (d1 <= 0 && d2 <= 0 && d2 >= d1) continue
 
     if (d1 > d2) {
       // entering
@@ -125,8 +142,20 @@ function clipToBrush(
   }
 
   if (enterFrac < leaveFrac && enterFrac > -1 && enterFrac < out.fraction) {
+    let chosen = clipPlane
+    // Rampbug fix. At flush piece joints a rider on the neighboring surface
+    // can sit fractionally inside this brush's face planes and "enter" it
+    // through the seam cap or a wall-like bevel: a phantom head-on wall that
+    // zeroes speed. If the sweep started at or under every real face plane,
+    // the geometrically correct contact is the nearest face, so report that.
+    const p = planes[chosen]
+    const wallLike = p.seam === true || (p.bevel === true && Math.abs(p.n.y) < 0.35)
+    if (wallLike && faceMaxD1 <= 0.5 && nearestFace >= 0) {
+      chosen = nearestFace
+    }
     out.fraction = enterFrac
-    out.normal.copy(planes[clipPlane].n)
+    out.normal.copy(planes[chosen].n)
     out.hit = true
+    out.hitBevel = planes[chosen].bevel === true
   }
 }

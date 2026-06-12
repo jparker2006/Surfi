@@ -20,7 +20,7 @@ export async function m1Gate() {
 
   // 1 + 2: strafe into the left face of the main test ramp
   inp.set({ right: true, yaw: 15 * Math.PI / 180, pitch: 0, forward: false, back: false, left: false, jump: false })
-  s.teleport(-100, -140, -600)
+  s.teleport(-250, -140, -600)
   s.setVelocity(0, 0, -300)
   await wait(200) // settle onto the face
   const speeds = []
@@ -34,7 +34,7 @@ export async function m1Gate() {
 
   // 3: passive slide
   inp.set({ right: false, yaw: 0, pitch: 0, forward: false, back: false, left: false, jump: false })
-  s.teleport(-100, -140, -600)
+  s.teleport(-250, -140, -600)
   s.setVelocity(0, 0, 0)
   await wait(1200)
   results.passiveSlideSpeed = s.speed
@@ -43,7 +43,7 @@ export async function m1Gate() {
   // 4: determinism across tick batching (synchronous, render loop cannot interleave)
   inp.set({ right: true, yaw: 15 * Math.PI / 180, pitch: 0, forward: false, back: false, left: false, jump: false })
   const run = (batch) => {
-    s.teleport(-100, -140, -600)
+    s.teleport(-250, -140, -600)
     s.setVelocity(0, 0, -300)
     let n = 256
     while (n > 0) {

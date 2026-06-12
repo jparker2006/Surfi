@@ -1,17 +1,23 @@
 import * as THREE from 'three'
 import './style.css'
 import { consts } from './engine/physics/constants'
-import { boxBrush, prismBrush, brushGeometry, brushWireframe, type Brush } from './engine/physics/brushes'
+import { boxBrush, brushWireframe } from './engine/physics/brushes'
 import { PlayerController } from './engine/physics/controller'
 import { FixedLoop } from './engine/loop'
 import { InputSystem } from './engine/input'
 import { FPSCamera } from './engine/camera'
 import { Hud } from './engine/hud'
 import { DebugPanel } from './engine/debugpanel'
+import { CourseGenerator } from './engine/gen/generator'
+import { Game } from './engine/game'
+import { acidsurf } from './levels/acidsurf'
 import { installTestApi, updateTestApi, isTestMode } from './testapi'
 
-// Milestone 1: movement core. One grey test ramp, a spawn platform, a void.
-// The only thing that matters here is that the surf physics feels right.
+// Engine bootstrap. The level is a plain config module; acidsurf is the
+// hardcoded v1 level. No level select, no routing.
+
+const level = acidsurf
+Object.assign(consts, level.physics ?? {})
 
 const app = document.getElementById('app')!
 const testMode = isTestMode()
@@ -31,44 +37,21 @@ const sun = new THREE.DirectionalLight(0xffffff, 1.5)
 sun.position.set(0.4, 1, 0.6)
 scene.add(sun)
 
-// test world: spawn platform, main ramp, transfer ramp
+// world: spawn platform at the origin feeding the generated course
 const SPAWN = new THREE.Vector3(0, 36.1, 40)
-const KILL_Y = -2600
-
-const brushes: Brush[] = [
-  // spawn platform, top at y = 0
-  boxBrush(new THREE.Vector3(-128, -64, -128), new THREE.Vector3(128, 0, 128)),
-  // main ramp: ridge along -z, sides at about 54.5 degrees (n.y = 0.58, surfable)
-  prismBrush(
-    new THREE.Vector3(0, -100, -200),
-    new THREE.Vector3(-400, -660, -200),
-    new THREE.Vector3(400, -660, -200),
-    new THREE.Vector3(0, 0, -1),
-    3200,
-  ),
-  // transfer ramp: offset right and lower, requires carrying speed
-  prismBrush(
-    new THREE.Vector3(250, -800, -3700),
-    new THREE.Vector3(-150, -1360, -3700),
-    new THREE.Vector3(650, -1360, -3700),
-    new THREE.Vector3(0, 0, -1),
-    2400,
-  ),
-]
+// ridge offset left of the platform so walking off drops onto the right face,
+// CS surf style, instead of balancing on the apex crest
+const SPAWN_RIDGE = new THREE.Vector3(-150, -40, -200)
 
 const platformMat = new THREE.MeshStandardMaterial({ color: 0x4a4a55, roughness: 0.9 })
 const rampMat = new THREE.MeshStandardMaterial({ color: 0x70707e, roughness: 0.8, flatShading: true })
-const wireMat = new THREE.LineBasicMaterial({ color: 0x00ff88 })
 
-const wireGroup = new THREE.Group()
-wireGroup.visible = false
-scene.add(wireGroup)
+const platform = boxBrush(new THREE.Vector3(-128, -64, -128), new THREE.Vector3(128, 0, 128))
+scene.add(new THREE.Mesh(new THREE.BoxGeometry(256, 64, 256).translate(0, -32, 0), platformMat))
 
-brushes.forEach((b, i) => {
-  const mesh = new THREE.Mesh(brushGeometry(b), i === 0 ? platformMat : rampMat)
-  scene.add(mesh)
-  wireGroup.add(new THREE.LineSegments(brushWireframe(b), wireMat))
-})
+const gen = new CourseGenerator(level.generation, rampMat, SPAWN_RIDGE)
+gen.addStatic(platform)
+scene.add(gen.group)
 
 // player + systems
 const controller = new PlayerController()
@@ -81,18 +64,45 @@ input.attach(renderer.domElement)
 
 const fpsCamera = new FPSCamera(window.innerWidth / window.innerHeight)
 const hud = new Hud(app)
+const game = new Game(level, controller, gen, SPAWN, testMode)
+
+// debug wireframes rebuilt lazily from the live collision set
+const wireMat = new THREE.LineBasicMaterial({ color: 0x00ff88 })
+const wireGroup = new THREE.Group()
+wireGroup.visible = false
+scene.add(wireGroup)
+let wireDirty = true
+
+function rebuildWires(): void {
+  while (wireGroup.children.length > 0) {
+    const c = wireGroup.children[0] as THREE.LineSegments
+    wireGroup.remove(c)
+    c.geometry.dispose()
+  }
+  for (const b of gen.collision) {
+    wireGroup.add(new THREE.LineSegments(brushWireframe(b), wireMat))
+  }
+  wireDirty = false
+}
+
 const panel = new DebugPanel(
-  (on) => { wireGroup.visible = on },
+  (on) => {
+    wireGroup.visible = on
+    if (on) rebuildWires()
+  },
   () => fpsCamera.setHorizontalFov(consts.fov),
 )
-
 input.onToggleDebug = () => panel.toggle()
-input.onRespawn = respawn
+input.onRespawn = () => {
+  if (game.state !== 'start') {
+    game.startRun()
+    snapToSpawn()
+  }
+}
 
-function respawn(): void {
-  controller.pos.copy(SPAWN)
-  prevPos.copy(SPAWN)
-  controller.vel.set(0, 0, 0)
+function snapToSpawn(): void {
+  prevPos.copy(controller.pos)
+  wireDirty = true
 }
 
 // fly / noclip
@@ -121,29 +131,87 @@ function tick(): void {
   prevPos.copy(controller.pos)
   if (panel.state.fly) {
     flyMove(TICK_DT)
-  } else {
-    controller.tick(input.frame(), brushes, TICK_DT)
-    if (controller.pos.y < KILL_Y) respawn()
+  } else if (game.state === 'playing') {
+    controller.tick(input.frame(), gen.collision, TICK_DT)
+    game.onTick()
   }
-  updateTestApi(surf, controller, 0, loop.tickCount)
+  updateTestApi(surf, controller, game, loop.tickCount)
+}
+
+// overlay management: re-render the overlay DOM only when the key changes
+let overlayKey = ''
+function syncOverlay(): void {
+  let key: string
+  if (game.state === 'start') {
+    key = 'start'
+  } else if (game.state === 'dead') {
+    key = `dead:${Math.floor(game.distance)}`
+  } else if (!testMode && !input.pointerLocked) {
+    key = 'resume'
+  } else {
+    key = 'none'
+  }
+  if (key === overlayKey) return
+  overlayKey = key
+
+  if (key === 'start') {
+    hud.showStart('SURFI', level.title, false)
+    hud.setHudVisible(false)
+  } else if (key === 'resume') {
+    hud.showStart('SURFI', level.title, true)
+  } else if (key.startsWith('dead')) {
+    hud.showDeath({
+      distance: game.distance,
+      peakSpeed: game.peakSpeed,
+      best: game.best,
+      isNewBest: game.newBest,
+    })
+    hud.setHudVisible(false)
+  } else {
+    hud.hideOverlay()
+    hud.setHudVisible(true)
+  }
 }
 
 function render(alpha: number): void {
   fpsCamera.update(prevPos, controller.pos, alpha, input.yaw, input.pitch)
   hud.setSpeed(Math.hypot(controller.vel.x, controller.vel.z))
+  hud.setDistance(game.distance)
   panel.setFps(loop.fps)
+  if (wireGroup.visible && wireDirty) rebuildWires()
+  syncOverlay()
   renderer.render(scene, fpsCamera.camera)
-
-  if (!testMode) {
-    if (input.pointerLocked) hud.hideOverlay()
-    else hud.showOverlay('<h1>SURFI</h1><p>click to surf</p><p class="hint">WASD move, mouse steer, space jump, R respawn</p>')
-  }
 }
 
 const loop = new FixedLoop(TICK_DT, tick, render)
+const surf = installTestApi(controller, input, game, gen, tick)
+if (testMode) {
+  ;(window as unknown as Record<string, unknown>).__surfDebug = { gen, controller, game, consts }
+}
 
-const surf = installTestApi(controller, input, tick)
-updateTestApi(surf, controller, 0, 0)
+// flow: click starts (and pointer locks); any key respawns from death
+renderer.domElement.addEventListener('click', () => {
+  if (game.state === 'start') {
+    game.startRun()
+    snapToSpawn()
+  } else if (game.state === 'dead') {
+    game.startRun()
+    snapToSpawn()
+  }
+})
+window.addEventListener('keydown', (e) => {
+  if (game.state === 'dead' && e.code !== 'Backquote' && e.code !== 'F3') {
+    game.startRun()
+    snapToSpawn()
+  }
+})
+
+// build a course behind the start screen so the world is never empty
+gen.reset(level.generation.fixedSeed)
+if (testMode) {
+  game.startRun()
+}
+updateTestApi(surf, controller, game, 0)
 
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight)
