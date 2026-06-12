@@ -10,6 +10,7 @@ import { Hud } from './engine/hud'
 import { DebugPanel } from './engine/debugpanel'
 import { CourseGenerator } from './engine/gen/generator'
 import { Game } from './engine/game'
+import { Drone } from './engine/audio'
 import { PaletteDriver } from './engine/fx/palette'
 import { PostChain } from './engine/fx/post'
 import { ParticleField } from './engine/fx/particles'
@@ -25,224 +26,252 @@ Object.assign(consts, level.physics ?? {})
 const app = document.getElementById('app')!
 const testMode = isTestMode()
 
-// renderer
-const renderer = new THREE.WebGLRenderer({ antialias: true })
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-renderer.setSize(window.innerWidth, window.innerHeight)
-app.appendChild(renderer.domElement)
-
-const scene = new THREE.Scene()
-
-// the trip: hue cycling materials, starfield, fog color, all speed-reactive
-const palette = new PaletteDriver(level.aesthetic)
-scene.background = palette.fogColor
-scene.add(palette.stars)
-const particles = new ParticleField(level.aesthetic)
-scene.add(particles.points)
-
-// world: spawn platform at the origin feeding the generated course
-const SPAWN = new THREE.Vector3(0, 36.1, 40)
-// ridge offset left of the platform so walking off drops onto the right face,
-// CS surf style, instead of balancing on the apex crest
-const SPAWN_RIDGE = new THREE.Vector3(-150, -40, -200)
-
-const platform = boxBrush(new THREE.Vector3(-128, -64, -128), new THREE.Vector3(128, 0, 128))
-scene.add(new THREE.Mesh(new THREE.BoxGeometry(256, 64, 256).translate(0, -32, 0), palette.platformMaterial))
-
-const gen = new CourseGenerator(level.generation, palette.rampMaterial, SPAWN_RIDGE)
-gen.addStatic(platform)
-scene.add(gen.group)
-
-// player + systems
-const controller = new PlayerController()
-const prevPos = new THREE.Vector3()
-controller.pos.copy(SPAWN)
-prevPos.copy(SPAWN)
-
-const input = new InputSystem(testMode)
-input.attach(renderer.domElement)
-
-const fpsCamera = new FPSCamera(window.innerWidth / window.innerHeight)
-const hud = new Hud(app)
-const game = new Game(level, controller, gen, SPAWN, testMode)
-
-// debug wireframes rebuilt lazily from the live collision set
-const wireMat = new THREE.LineBasicMaterial({ color: 0x00ff88 })
-const wireGroup = new THREE.Group()
-wireGroup.visible = false
-scene.add(wireGroup)
-let wireDirty = true
-
-function rebuildWires(): void {
-  while (wireGroup.children.length > 0) {
-    const c = wireGroup.children[0] as THREE.LineSegments
-    wireGroup.remove(c)
-    c.geometry.dispose()
-  }
-  for (const b of gen.collision) {
-    wireGroup.add(new THREE.LineSegments(brushWireframe(b), wireMat))
-  }
-  wireDirty = false
+// desktop only: touch devices get a styled blocker instead of the game
+const touchDevice = !testMode && window.matchMedia('(hover: none) and (pointer: coarse)').matches
+if (touchDevice) {
+  app.innerHTML =
+    '<div class="blocker"><h1>SURFI</h1>' +
+    '<p>this one needs a keyboard and a mouse.<br>come back on a desktop to ride.</p></div>'
+} else {
+  boot()
 }
 
-const panel = new DebugPanel(
-  (on) => {
-    wireGroup.visible = on
-    if (on) rebuildWires()
-  },
-  () => fpsCamera.setHorizontalFov(consts.fov),
-)
-input.onToggleDebug = () => panel.toggle()
-input.onRespawn = () => {
-  if (game.state !== 'start') {
-    game.startRun()
-    snapToSpawn()
-  }
-}
+function boot(): void {
 
-function snapToSpawn(): void {
-  prevPos.copy(controller.pos)
-  wireDirty = true
-}
-
-// fly / noclip
-const flyDir = new THREE.Vector3()
-function flyMove(dt: number): void {
-  const f = input.frame()
-  const speed = 1200
-  const cy = Math.cos(f.yaw), sy = Math.sin(f.yaw)
-  const cp = Math.cos(f.pitch), sp = Math.sin(f.pitch)
-  const fmove = (f.forward ? 1 : 0) - (f.back ? 1 : 0)
-  const smove = (f.right ? 1 : 0) - (f.left ? 1 : 0)
-  flyDir.set(
-    -sy * cp * fmove + cy * smove,
-    sp * fmove + (f.jump ? 1 : 0),
-    -cy * cp * fmove - sy * smove,
-  )
-  if (flyDir.lengthSq() > 0) flyDir.normalize()
-  controller.pos.addScaledVector(flyDir, speed * dt)
-  controller.vel.set(0, 0, 0)
-}
-
-// fixed timestep simulation
-const TICK_DT = 1 / consts.tickRate
-
-function tick(): void {
-  prevPos.copy(controller.pos)
-  if (panel.state.fly) {
-    flyMove(TICK_DT)
-  } else if (game.state === 'playing') {
-    controller.tick(input.frame(), gen.collision, TICK_DT)
-    game.onTick()
-  }
-  updateTestApi(surf, controller, game, loop.tickCount)
-}
-
-// overlay management: re-render the overlay DOM only when the key changes
-let overlayKey = ''
-function syncOverlay(): void {
-  let key: string
-  if (game.state === 'start') {
-    key = 'start'
-  } else if (game.state === 'dead') {
-    key = `dead:${Math.floor(game.distance)}`
-  } else if (!testMode && !input.pointerLocked) {
-    key = 'resume'
-  } else {
-    key = 'none'
-  }
-  if (key === overlayKey) return
-  overlayKey = key
-
-  if (key === 'start') {
-    hud.showStart('SURFI', level.title, false)
-    hud.setHudVisible(false)
-  } else if (key === 'resume') {
-    hud.showStart('SURFI', level.title, true)
-  } else if (key.startsWith('dead')) {
-    hud.showDeath({
-      distance: game.distance,
-      peakSpeed: game.peakSpeed,
-      best: game.best,
-      isNewBest: game.newBest,
-    })
-    hud.setHudVisible(false)
-  } else {
-    hud.hideOverlay()
-    hud.setHudVisible(true)
-  }
-}
-
-// fx state: one normalized speed intensity drives every effect
-const post = new PostChain(renderer, scene, fpsCamera.camera, level.aesthetic)
-let fxTimeLast = -1
-let smoothedIntensity = 0
-let currentHFov = consts.fov
-
-function render(alpha: number): void {
-  fpsCamera.update(prevPos, controller.pos, alpha, input.yaw, input.pitch)
-  const speed = Math.hypot(controller.vel.x, controller.vel.z)
-  hud.setSpeed(speed)
-  hud.setDistance(game.distance)
-  panel.setFps(loop.fps)
-  if (wireGroup.visible && wireDirty) rebuildWires()
-  syncOverlay()
-
-  const now = performance.now() / 1000
-  const dt = fxTimeLast < 0 ? 0.016 : Math.min(0.1, now - fxTimeLast)
-  fxTimeLast = now
-
-  const raw = THREE.MathUtils.clamp(speed / level.aesthetic.speedForMaxFx, 0, 1)
-  const target = raw * raw * (3 - 2 * raw) // smoothstep curve
-  smoothedIntensity += (target - smoothedIntensity) * Math.min(1, dt * 5)
-
-  // fov kick, horizontal degrees, smoothed
-  const targetFov = consts.fov + level.aesthetic.fovKick * smoothedIntensity
-  if (Math.abs(targetFov - currentHFov) > 0.01) {
-    currentHFov += (targetFov - currentHFov) * Math.min(1, dt * 6)
-    fpsCamera.setHorizontalFov(currentHFov)
-  }
-
-  palette.update(dt, now, smoothedIntensity, fpsCamera.camera.position)
-  particles.update(fpsCamera.camera.position, smoothedIntensity, palette.currentHue)
-  post.update(smoothedIntensity)
-  post.render()
-}
-
-const loop = new FixedLoop(TICK_DT, tick, render)
-const surf = installTestApi(controller, input, game, gen, tick)
-if (testMode) {
-  ;(window as unknown as Record<string, unknown>).__surfDebug = { gen, controller, game, consts }
-}
-
-// flow: click starts (and pointer locks); any key respawns from death
-renderer.domElement.addEventListener('click', () => {
-  if (game.state === 'start') {
-    game.startRun()
-    snapToSpawn()
-  } else if (game.state === 'dead') {
-    game.startRun()
-    snapToSpawn()
-  }
-})
-window.addEventListener('keydown', (e) => {
-  if (game.state === 'dead' && e.code !== 'Backquote' && e.code !== 'F3') {
-    game.startRun()
-    snapToSpawn()
-  }
-})
-
-// build a course behind the start screen so the world is never empty
-gen.reset(level.generation.fixedSeed)
-if (testMode) {
-  game.startRun()
-}
-updateTestApi(surf, controller, game, 0)
-
-window.addEventListener('resize', () => {
+  // renderer
+  const renderer = new THREE.WebGLRenderer({ antialias: true })
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
   renderer.setSize(window.innerWidth, window.innerHeight)
-  post.setSize(window.innerWidth, window.innerHeight)
-  fpsCamera.setAspect(window.innerWidth / window.innerHeight)
-})
+  app.appendChild(renderer.domElement)
 
-loop.start()
+  const scene = new THREE.Scene()
+
+  // the trip: hue cycling materials, starfield, fog color, all speed-reactive
+  const palette = new PaletteDriver(level.aesthetic)
+  scene.background = palette.fogColor
+  scene.add(palette.stars)
+  const particles = new ParticleField(level.aesthetic)
+  scene.add(particles.points)
+
+  // world: spawn platform at the origin feeding the generated course
+  const SPAWN = new THREE.Vector3(0, 36.1, 40)
+  // ridge offset left of the platform so walking off drops onto the right face,
+  // CS surf style, instead of balancing on the apex crest
+  const SPAWN_RIDGE = new THREE.Vector3(-150, -40, -200)
+
+  const platform = boxBrush(new THREE.Vector3(-128, -64, -128), new THREE.Vector3(128, 0, 128))
+  scene.add(new THREE.Mesh(new THREE.BoxGeometry(256, 64, 256).translate(0, -32, 0), palette.platformMaterial))
+
+  const gen = new CourseGenerator(level.generation, palette.rampMaterial, SPAWN_RIDGE)
+  gen.addStatic(platform)
+  scene.add(gen.group)
+
+  // player + systems
+  const controller = new PlayerController()
+  const prevPos = new THREE.Vector3()
+  controller.pos.copy(SPAWN)
+  prevPos.copy(SPAWN)
+
+  const input = new InputSystem(testMode)
+  input.attach(renderer.domElement)
+
+  const fpsCamera = new FPSCamera(window.innerWidth / window.innerHeight)
+  const hud = new Hud(app)
+  const game = new Game(level, controller, gen, SPAWN, testMode)
+  const drone = new Drone(level.audio)
+  hud.setMuted(drone.muted)
+  hud.onMuteToggle = () => {
+    drone.ensureStarted()
+    drone.toggleMute()
+    hud.setMuted(drone.muted)
+  }
+  input.onToggleMute = () => {
+    drone.ensureStarted()
+    drone.toggleMute()
+    hud.setMuted(drone.muted)
+  }
+
+  // debug wireframes rebuilt lazily from the live collision set
+  const wireMat = new THREE.LineBasicMaterial({ color: 0x00ff88 })
+  const wireGroup = new THREE.Group()
+  wireGroup.visible = false
+  scene.add(wireGroup)
+  let wireDirty = true
+
+  function rebuildWires(): void {
+    while (wireGroup.children.length > 0) {
+      const c = wireGroup.children[0] as THREE.LineSegments
+      wireGroup.remove(c)
+      c.geometry.dispose()
+    }
+    for (const b of gen.collision) {
+      wireGroup.add(new THREE.LineSegments(brushWireframe(b), wireMat))
+    }
+    wireDirty = false
+  }
+
+  const panel = new DebugPanel(
+    (on) => {
+      wireGroup.visible = on
+      if (on) rebuildWires()
+    },
+    () => fpsCamera.setHorizontalFov(consts.fov),
+  )
+  input.onToggleDebug = () => panel.toggle()
+  input.onRespawn = () => {
+    if (game.state !== 'start') {
+      game.startRun()
+      snapToSpawn()
+    }
+  }
+
+  function snapToSpawn(): void {
+    prevPos.copy(controller.pos)
+    wireDirty = true
+  }
+
+  // fly / noclip
+  const flyDir = new THREE.Vector3()
+  function flyMove(dt: number): void {
+    const f = input.frame()
+    const speed = 1200
+    const cy = Math.cos(f.yaw), sy = Math.sin(f.yaw)
+    const cp = Math.cos(f.pitch), sp = Math.sin(f.pitch)
+    const fmove = (f.forward ? 1 : 0) - (f.back ? 1 : 0)
+    const smove = (f.right ? 1 : 0) - (f.left ? 1 : 0)
+    flyDir.set(
+      -sy * cp * fmove + cy * smove,
+      sp * fmove + (f.jump ? 1 : 0),
+      -cy * cp * fmove - sy * smove,
+    )
+    if (flyDir.lengthSq() > 0) flyDir.normalize()
+    controller.pos.addScaledVector(flyDir, speed * dt)
+    controller.vel.set(0, 0, 0)
+  }
+
+  // fixed timestep simulation
+  const TICK_DT = 1 / consts.tickRate
+
+  function tick(): void {
+    prevPos.copy(controller.pos)
+    if (panel.state.fly) {
+      flyMove(TICK_DT)
+    } else if (game.state === 'playing') {
+      controller.tick(input.frame(), gen.collision, TICK_DT)
+      game.onTick()
+    }
+    updateTestApi(surf, controller, game, loop.tickCount)
+  }
+
+  // overlay management: re-render the overlay DOM only when the key changes
+  let overlayKey = ''
+  function syncOverlay(): void {
+    let key: string
+    if (game.state === 'start') {
+      key = 'start'
+    } else if (game.state === 'dead') {
+      key = `dead:${Math.floor(game.distance)}`
+    } else if (!testMode && !input.pointerLocked) {
+      key = 'resume'
+    } else {
+      key = 'none'
+    }
+    if (key === overlayKey) return
+    overlayKey = key
+
+    if (key === 'start') {
+      hud.showStart('SURFI', level.title, false)
+      hud.setHudVisible(false)
+    } else if (key === 'resume') {
+      hud.showStart('SURFI', level.title, true)
+    } else if (key.startsWith('dead')) {
+      hud.showDeath({
+        distance: game.distance,
+        peakSpeed: game.peakSpeed,
+        best: game.best,
+        isNewBest: game.newBest,
+      })
+      hud.setHudVisible(false)
+    } else {
+      hud.hideOverlay()
+      hud.setHudVisible(true)
+    }
+  }
+
+  // fx state: one normalized speed intensity drives every effect
+  const post = new PostChain(renderer, scene, fpsCamera.camera, level.aesthetic)
+  let fxTimeLast = -1
+  let smoothedIntensity = 0
+  let currentHFov = consts.fov
+
+  function render(alpha: number): void {
+    fpsCamera.update(prevPos, controller.pos, alpha, input.yaw, input.pitch)
+    const speed = Math.hypot(controller.vel.x, controller.vel.z)
+    hud.setSpeed(speed)
+    hud.setDistance(game.distance)
+    panel.setFps(loop.fps)
+    if (wireGroup.visible && wireDirty) rebuildWires()
+    syncOverlay()
+
+    const now = performance.now() / 1000
+    const dt = fxTimeLast < 0 ? 0.016 : Math.min(0.1, now - fxTimeLast)
+    fxTimeLast = now
+
+    const raw = THREE.MathUtils.clamp(speed / level.aesthetic.speedForMaxFx, 0, 1)
+    const target = raw * raw * (3 - 2 * raw) // smoothstep curve
+    smoothedIntensity += (target - smoothedIntensity) * Math.min(1, dt * 5)
+
+    // fov kick, horizontal degrees, smoothed
+    const targetFov = consts.fov + level.aesthetic.fovKick * smoothedIntensity
+    if (Math.abs(targetFov - currentHFov) > 0.01) {
+      currentHFov += (targetFov - currentHFov) * Math.min(1, dt * 6)
+      fpsCamera.setHorizontalFov(currentHFov)
+    }
+
+    palette.update(dt, now, smoothedIntensity, fpsCamera.camera.position)
+    particles.update(fpsCamera.camera.position, smoothedIntensity, palette.currentHue)
+    post.update(smoothedIntensity)
+    drone.update(smoothedIntensity)
+    post.render()
+  }
+
+  const loop = new FixedLoop(TICK_DT, tick, render)
+  // window.__surf and __surfInput exist in dev builds and under ?test=1 only
+  const surf = installTestApi(controller, input, game, gen, tick, import.meta.env.DEV || testMode)
+  if (testMode) {
+    ;(window as unknown as Record<string, unknown>).__surfDebug = { gen, controller, game, consts }
+  }
+
+  // flow: click starts (and pointer locks); any key respawns from death
+  renderer.domElement.addEventListener('click', () => {
+    drone.ensureStarted()
+    if (game.state === 'start') {
+      game.startRun()
+      snapToSpawn()
+    } else if (game.state === 'dead') {
+      game.startRun()
+      snapToSpawn()
+    }
+  })
+  window.addEventListener('keydown', (e) => {
+    if (game.state === 'dead' && e.code !== 'Backquote' && e.code !== 'F3') {
+      game.startRun()
+      snapToSpawn()
+    }
+  })
+
+  // build a course behind the start screen so the world is never empty
+  gen.reset(level.generation.fixedSeed)
+  if (testMode) {
+    game.startRun()
+  }
+  updateTestApi(surf, controller, game, 0)
+
+  window.addEventListener('resize', () => {
+    renderer.setSize(window.innerWidth, window.innerHeight)
+    post.setSize(window.innerWidth, window.innerHeight)
+    fpsCamera.setAspect(window.innerWidth / window.innerHeight)
+  })
+
+  loop.start()
+}

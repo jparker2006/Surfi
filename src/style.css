@@ -178,3 +178,23 @@ body {
   line-height: 1.8;
   opacity: 0.85;
 }
+
+.hud-mute {
+  position: absolute;
+  bottom: 18px;
+  right: 18px;
+  padding: 8px 14px;
+  background: rgba(20, 8, 36, 0.6);
+  border: 1px solid rgba(190, 120, 255, 0.45);
+  border-radius: 4px;
+  color: #d8c5f5;
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  text-shadow: 0 0 8px rgba(190, 120, 255, 0.7);
+}
+
+.hud-mute:hover {
+  background: rgba(40, 16, 64, 0.8);
+}

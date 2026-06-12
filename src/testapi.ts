@@ -50,6 +50,7 @@ export function installTestApi(
   game: Game,
   gen: CourseGenerator,
   stepOneTick: () => void,
+  expose: boolean,
 ): SurfDebug {
   const surf: SurfDebug = {
     speed: 0,
@@ -80,10 +81,12 @@ export function installTestApi(
       return gen.spineAt(cum)
     },
   }
-  window.__surf = surf
-  window.__surfInput = {
-    set: (p) => input.inject(p),
-    clear: () => input.clearInjection(),
+  if (expose) {
+    window.__surf = surf
+    window.__surfInput = {
+      set: (p) => input.inject(p),
+      clear: () => input.clearInjection(),
+    }
   }
   return surf
 }

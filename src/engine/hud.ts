@@ -10,9 +10,12 @@ export interface DeathStats {
 }
 
 export class Hud {
+  onMuteToggle: (() => void) | null = null
+
   private readonly speedEl: HTMLDivElement
   private readonly distanceEl: HTMLDivElement
   private readonly overlayEl: HTMLDivElement
+  private readonly muteEl: HTMLButtonElement
   private lastSpeed = -1
   private lastDistance = -1
 
@@ -30,6 +33,16 @@ export class Hud {
     this.overlayEl = document.createElement('div')
     this.overlayEl.className = 'hud-overlay'
     root.appendChild(this.overlayEl)
+
+    this.muteEl = document.createElement('button')
+    this.muteEl.className = 'hud-mute'
+    this.muteEl.type = 'button'
+    this.muteEl.addEventListener('click', () => this.onMuteToggle?.())
+    root.appendChild(this.muteEl)
+  }
+
+  setMuted(muted: boolean): void {
+    this.muteEl.textContent = muted ? 'sound off [m]' : 'sound on [m]'
   }
 
   setSpeed(speed: number): void {

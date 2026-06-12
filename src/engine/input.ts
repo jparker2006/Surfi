@@ -23,6 +23,7 @@ export class InputSystem {
   pointerLocked = false
   onRespawn: (() => void) | null = null
   onToggleDebug: (() => void) | null = null
+  onToggleMute: (() => void) | null = null
 
   private readonly keys = {
     forward: false,
@@ -53,7 +54,10 @@ export class InputSystem {
 
     el.addEventListener('click', () => {
       if (!this.testMode && document.pointerLockElement !== el) {
-        el.requestPointerLock()
+        // returns a promise in modern browsers; rejection (iframes, synthetic
+        // clicks) must not surface as an unhandled error
+        const r = el.requestPointerLock() as unknown
+        if (r instanceof Promise) r.catch(() => {})
       }
     })
     document.addEventListener('pointerlockchange', () => {
@@ -77,6 +81,9 @@ export class InputSystem {
       case 'Space': this.keys.jump = down; e.preventDefault(); break
       case 'KeyR':
         if (down) this.onRespawn?.()
+        break
+      case 'KeyM':
+        if (down) this.onToggleMute?.()
         break
       case 'Backquote':
       case 'F3':
