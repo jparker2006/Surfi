@@ -10,6 +10,9 @@ import { Hud } from './engine/hud'
 import { DebugPanel } from './engine/debugpanel'
 import { CourseGenerator } from './engine/gen/generator'
 import { Game } from './engine/game'
+import { PaletteDriver } from './engine/fx/palette'
+import { PostChain } from './engine/fx/post'
+import { ParticleField } from './engine/fx/particles'
 import { acidsurf } from './levels/acidsurf'
 import { installTestApi, updateTestApi, isTestMode } from './testapi'
 
@@ -29,13 +32,13 @@ renderer.setSize(window.innerWidth, window.innerHeight)
 app.appendChild(renderer.domElement)
 
 const scene = new THREE.Scene()
-scene.background = new THREE.Color(0x0b0b12)
 
-const hemi = new THREE.HemisphereLight(0x8899bb, 0x222233, 1.2)
-scene.add(hemi)
-const sun = new THREE.DirectionalLight(0xffffff, 1.5)
-sun.position.set(0.4, 1, 0.6)
-scene.add(sun)
+// the trip: hue cycling materials, starfield, fog color, all speed-reactive
+const palette = new PaletteDriver(level.aesthetic)
+scene.background = palette.fogColor
+scene.add(palette.stars)
+const particles = new ParticleField(level.aesthetic)
+scene.add(particles.points)
 
 // world: spawn platform at the origin feeding the generated course
 const SPAWN = new THREE.Vector3(0, 36.1, 40)
@@ -43,13 +46,10 @@ const SPAWN = new THREE.Vector3(0, 36.1, 40)
 // CS surf style, instead of balancing on the apex crest
 const SPAWN_RIDGE = new THREE.Vector3(-150, -40, -200)
 
-const platformMat = new THREE.MeshStandardMaterial({ color: 0x4a4a55, roughness: 0.9 })
-const rampMat = new THREE.MeshStandardMaterial({ color: 0x70707e, roughness: 0.8, flatShading: true })
-
 const platform = boxBrush(new THREE.Vector3(-128, -64, -128), new THREE.Vector3(128, 0, 128))
-scene.add(new THREE.Mesh(new THREE.BoxGeometry(256, 64, 256).translate(0, -32, 0), platformMat))
+scene.add(new THREE.Mesh(new THREE.BoxGeometry(256, 64, 256).translate(0, -32, 0), palette.platformMaterial))
 
-const gen = new CourseGenerator(level.generation, rampMat, SPAWN_RIDGE)
+const gen = new CourseGenerator(level.generation, palette.rampMaterial, SPAWN_RIDGE)
 gen.addStatic(platform)
 scene.add(gen.group)
 
@@ -173,14 +173,40 @@ function syncOverlay(): void {
   }
 }
 
+// fx state: one normalized speed intensity drives every effect
+const post = new PostChain(renderer, scene, fpsCamera.camera, level.aesthetic)
+let fxTimeLast = -1
+let smoothedIntensity = 0
+let currentHFov = consts.fov
+
 function render(alpha: number): void {
   fpsCamera.update(prevPos, controller.pos, alpha, input.yaw, input.pitch)
-  hud.setSpeed(Math.hypot(controller.vel.x, controller.vel.z))
+  const speed = Math.hypot(controller.vel.x, controller.vel.z)
+  hud.setSpeed(speed)
   hud.setDistance(game.distance)
   panel.setFps(loop.fps)
   if (wireGroup.visible && wireDirty) rebuildWires()
   syncOverlay()
-  renderer.render(scene, fpsCamera.camera)
+
+  const now = performance.now() / 1000
+  const dt = fxTimeLast < 0 ? 0.016 : Math.min(0.1, now - fxTimeLast)
+  fxTimeLast = now
+
+  const raw = THREE.MathUtils.clamp(speed / level.aesthetic.speedForMaxFx, 0, 1)
+  const target = raw * raw * (3 - 2 * raw) // smoothstep curve
+  smoothedIntensity += (target - smoothedIntensity) * Math.min(1, dt * 5)
+
+  // fov kick, horizontal degrees, smoothed
+  const targetFov = consts.fov + level.aesthetic.fovKick * smoothedIntensity
+  if (Math.abs(targetFov - currentHFov) > 0.01) {
+    currentHFov += (targetFov - currentHFov) * Math.min(1, dt * 6)
+    fpsCamera.setHorizontalFov(currentHFov)
+  }
+
+  palette.update(dt, now, smoothedIntensity, fpsCamera.camera.position)
+  particles.update(fpsCamera.camera.position, smoothedIntensity, palette.currentHue)
+  post.update(smoothedIntensity)
+  post.render()
 }
 
 const loop = new FixedLoop(TICK_DT, tick, render)
@@ -215,6 +241,7 @@ updateTestApi(surf, controller, game, 0)
 
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight)
+  post.setSize(window.innerWidth, window.innerHeight)
   fpsCamera.setAspect(window.innerWidth / window.innerHeight)
 })
 
