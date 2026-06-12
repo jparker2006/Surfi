@@ -136,8 +136,17 @@ export function buildSegment(
     }
 
     case 'spine': {
-      // flare out to a wide ridge surfable on both faces, then back in
-      const wide: Dims = { halfWidth: endDims.halfWidth * 1.7, height: endDims.height * 1.15 }
+      // Flare out to a wide ridge surfable on both faces, then back in. The
+      // height multiplier is not cosmetic. A face stays surfable only while its
+      // normal is steeper than the ground cutoff (n.y < GROUND_NORMAL_Y = 0.7);
+      // at or above it the controller categorizes the face as walkable ground.
+      // Widening alone flattens the faces: halfWidth * 1.7 with only a 1.15
+      // height bump pushes them to n.y ~ 0.74, over the cutoff, so the crest
+      // reads as ground. A rider then grounds at the top and friction arrests
+      // them there instead of surfing across, the apex stick humans hit on
+      // spines. Raising the height in step with the width keeps the faces steep
+      // (n.y ~ 0.64) so the whole ridge stays surf, like every other ramp.
+      const wide: Dims = { halfWidth: endDims.halfWidth * 1.7, height: endDims.height * 1.5 }
       brushes.push(wedgePiece(cursor, length * 0.35, slope, 0, wide))
       spine.push(spinePointAt(cursor))
       brushes.push(wedgePiece(cursor, length * 0.3, slope, 0, wide))

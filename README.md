@@ -78,8 +78,9 @@ air straffing into it, to find the apex/steep side sticks humans hit),
 `anomaly-sweep.js` (drives the clean, sloppy, and climber bots across many
 seeds with the recorder on and aggregates detector counts), and
 `trap-repro.js` (the permanent regression: fixed replays of the bevel wall
-trap (CASE A) and the apex bevel landing (CASE D), an end to end backward
-drift check, and an odometer monotonicity check).
+trap (CASE A) and the apex bevel landing (CASE D), a spine apex ground arrest
+built from the spine geometry (CASE E), an end to end backward drift check, and
+an odometer monotonicity check).
 
 ## Architecture
 

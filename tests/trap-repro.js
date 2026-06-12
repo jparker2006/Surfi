@@ -39,6 +39,18 @@
 //   from above so faceMaxD1 > 0.5 and the old guard let the bevel through. A
 //   fixed start state plus the recorded inputs reproduce it every run.
 //   Signature: along-course speed collapses while horizontal speed stays high.
+//
+//   CASE E (seed 1): the apex stick on a spine segment, a different mechanism
+//   from A/D (no clip at all). The spine flares to a wide ridge (segments.ts),
+//   and before the fix the flare flattened its faces to n.y ~ 0.74, just over
+//   the GROUND_NORMAL_Y = 0.7 cutoff, so the crest was walkable GROUND. A surfer
+//   riding onto it grounded at the top and ground friction arrested them (~1080
+//   -> ~340 u/s over ~18 ticks) instead of surfing across. There is no bevel,
+//   crease, or speed-clip here, so it cannot be a fixed normal replay; it is
+//   built from the spine geometry directly. The fix steepens the flare so the
+//   faces stay surf (n.y ~ 0.64). The rider must keep its speed and ride the
+//   ridge or fly off, never ground-arrest. Signature: a fast rider placed on a
+//   spine face grounds and friction bleeds its horizontal speed to a crawl.
 
 import { sloppyBotSource } from './sloppy-bot.js'
 import { botSource } from './bot.js'
@@ -86,6 +98,12 @@ const CASE_D = {
   ],
 }
 
+// CASE E: the spine apex stick is built from geometry, not a captured normal,
+// because the trap is plain grounding (no clip). Seed 1 has a spine segment
+// whose flattest side face is the headline number: surf when n.y < 0.7, walkable
+// ground (and so an arrest) at or above it.
+const CASE_E_SEED = 1
+
 function frameOf(inp) {
   return {
     forward: !!inp.f, back: !!inp.b, left: !!inp.l, right: !!inp.r,
@@ -129,6 +147,72 @@ function replay(c) {
   return trace
 }
 
+// CASE E replay. The spine flare is the only place a surf face is flatter than a
+// regular ramp, so the wedge brush with the flattest (max n.y) side face is the
+// spine crest. Place a fast rider just above that face and let it fall on and
+// surf, with no input, so the only thing under test is whether the crest behaves
+// as surf or as walkable ground. On buggy geometry the rider grounds and friction
+// bleeds the horizontal speed to a crawl; on the fix it keeps speed (rides across
+// or flies off). Geometry is deterministic from the seed and the rider state is
+// set explicitly, so this replays identically every run with no bot dependence.
+function replaySpineRide(seed) {
+  const { gen, controller } = window.__surfDebug
+  gen.reset(seed)
+  gen.ensure(12000)
+  const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z })
+  const add = (a, b) => ({ x: a.x + b.x, y: a.y + b.y, z: a.z + b.z })
+  const mul = (a, s) => ({ x: a.x * s, y: a.y * s, z: a.z * s })
+  const nrm = (a) => mul(a, 1 / Math.hypot(a.x, a.y, a.z))
+  const lerp = (a, b, t) => add(a, mul(sub(b, a), t))
+  const half = { x: 16, y: 36, z: 16 }
+
+  // wedge brush whose left side face is the flattest in the course: the spine
+  let brush = null
+  let faceN = null
+  let bestNy = 0.62 // above a regular ramp (~0.6), so only the spine qualifies
+  for (const b of gen.collision) {
+    if (b.verts.length !== 6) continue
+    for (const p of b.planes) {
+      if (p.bevel || p.seam) continue
+      if (p.n.x < -0.2 && p.n.y > bestNy) {
+        bestNy = p.n.y
+        brush = b
+        faceN = p.n
+      }
+    }
+  }
+  if (!brush) return { found: false }
+
+  const apexS = brush.verts[0]
+  const apexE = brush.verts[3]
+  const baseS = brush.verts[1]
+  const baseE = brush.verts[4]
+  const E = nrm(sub(apexE, apexS))
+  const apx = lerp(apexS, apexE, 0.5)
+  const bas = lerp(baseS, baseE, 0.5)
+  const Q = lerp(apx, bas, 0.35) // mid-height on the face
+  const support = Math.abs(faceN.x) * half.x + Math.abs(faceN.y) * half.y + Math.abs(faceN.z) * half.z
+  const C = add(Q, mul(faceN, support + 60)) // start clear of the surface, no overlap
+  const Vel = add(mul(E, 1100), mul(faceN, -260)) // down-course, descending onto the face
+
+  controller.recording = false
+  controller.pos.set(C.x, C.y, C.z)
+  controller.vel.set(Vel.x, Vel.y, Vel.z)
+  controller.grounded = false
+  const empty = { forward: false, back: false, left: false, right: false, jump: false, yaw: 0, pitch: 0 }
+  let peak = 0
+  let minH = Infinity
+  let endH = 0
+  for (let t = 0; t < 36; t++) {
+    controller.tick(empty, gen.collision, TICK)
+    const h = Math.hypot(controller.vel.x, controller.vel.z)
+    if (h > peak) peak = h
+    if (h < minH) minH = h
+    endH = h
+  }
+  return { found: true, faceNy: Math.round(faceN.y * 1000) / 1000, peak, minH, endH }
+}
+
 export function runTrapRepro() {
   const results = []
 
@@ -160,6 +244,25 @@ export function runTrapRepro() {
     ratio: Math.round((endD / peakD) * 100) / 100,
     trapReproduced: collapsedD,
     pass: !collapsedD,
+  })
+
+  // CASE E: the spine apex. A fast rider placed on the flattest spine face must
+  // not ground and friction-arrest at the crest. Two locks: the face must be
+  // surf (n.y < 0.7, the geometry invariant the fix restores) and the horizontal
+  // speed must not collapse (the behaviour). A collapse here is the ground-
+  // friction bleed, not a clip, so the threshold is generous.
+  const e = replaySpineRide(CASE_E_SEED)
+  const surfFace = e.found && e.faceNy < 0.7
+  const collapsedE = !e.found || e.minH < 0.6 * e.peak
+  results.push({
+    case: `seed${CASE_E_SEED}-spine-apex-ground-arrest`,
+    spineFaceNy: e.found ? e.faceNy : null,
+    surfFace,
+    peakHoriz: e.found ? Math.round(e.peak) : 0,
+    endHoriz: e.found ? Math.round(e.endH) : 0,
+    minHoriz: e.found ? Math.round(e.minH) : 0,
+    trapReproduced: collapsedE,
+    pass: e.found && surfFace && !collapsedE,
   })
 
   // CASE B: end to end. The deterministic sloppy bot on the trapping seed must
