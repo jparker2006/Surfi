@@ -11,6 +11,9 @@ export type GameState = 'start' | 'playing' | 'dead'
 export class Game {
   state: GameState = 'start'
   distance = 0
+  // live projected course distance (not the peak odometer above): where the
+  // player actually is right now, for the debug readout
+  liveDistance = 0
   peakSpeed = 0
   best = 0
   newBest = false
@@ -59,6 +62,7 @@ export class Game {
     this.controller.pos.copy(this.spawn)
     this.controller.vel.set(0, 0, 0)
     this.distance = 0
+    this.liveDistance = 0
     this.peakSpeed = 0
     this.spineIndex = 0
     this.newBest = false
@@ -74,6 +78,7 @@ export class Game {
 
     const res = this.gen.progress(this.controller.pos, this.spineIndex)
     this.spineIndex = res.index
+    this.liveDistance = res.dist
     // the odometer is the peak arc length reached this run: it only ever grows.
     // If the player slides back down the course the projected distance drops,
     // but the score holds, so backward motion never counts down on screen.

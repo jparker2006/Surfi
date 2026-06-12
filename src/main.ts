@@ -16,6 +16,7 @@ import { PaletteDriver } from './engine/fx/palette'
 import { PostChain } from './engine/fx/post'
 import { ParticleField } from './engine/fx/particles'
 import { acidsurf } from './levels/acidsurf'
+import { LiveReadout } from './engine/livereadout'
 import { installTestApi, updateTestApi, isTestMode } from './testapi'
 
 // Engine bootstrap. The level is a plain config module; acidsurf is the
@@ -23,6 +24,11 @@ import { installTestApi, updateTestApi, isTestMode } from './testapi'
 
 const level = acidsurf
 Object.assign(consts, level.physics ?? {})
+
+// Build stamp: identify the running build so a stale deploy is obvious. Logged
+// on load (always) and shown in the debug readout.
+const BUILD_LABEL = `${__BUILD_HASH__} @ ${__BUILD_TIME__}`
+console.log(`SURFI build ${BUILD_LABEL}`)
 
 const app = document.getElementById('app')!
 const testMode = isTestMode()
@@ -77,12 +83,17 @@ function boot(): void {
   const recordingOn = import.meta.env.DEV || testMode
   const recorder = new AnomalyRecorder()
   controller.recording = recordingOn
+  // sample every tick during play so the manual capture (K) and detector g have
+  // a live rolling window. The test sweeps still toggle this around their runs.
+  recorder.enabled = recordingOn
 
   const input = new InputSystem(testMode)
   input.attach(renderer.domElement)
 
   const fpsCamera = new FPSCamera(window.innerWidth / window.innerHeight)
   const hud = new Hud(app)
+  // debug only: live contact readout, toggled with the debug panel
+  const readout = new LiveReadout(app, BUILD_LABEL)
   const game = new Game(level, controller, gen, SPAWN, testMode)
   const drone = new Drone(level.audio)
   hud.setMuted(drone.muted)
@@ -131,7 +142,10 @@ function boot(): void {
     },
     () => fpsCamera.setHorizontalFov(consts.fov),
   )
-  input.onToggleDebug = () => panel.toggle()
+  input.onToggleDebug = () => {
+    panel.toggle()
+    readout.toggle(!readout.visible)
+  }
   input.onRespawn = () => {
     if (game.state !== 'start') {
       game.startRun()
@@ -139,9 +153,36 @@ function boot(): void {
     }
   }
 
+  // manual capture (K): dump the recorded state window to a downloadable JSON,
+  // the human-in-the-loop ground truth pressed the instant they stick
+  input.onCapture = () => {
+    if (!recordingOn) return
+    const snap = recorder.snapshot()
+    const payload = {
+      build: BUILD_LABEL,
+      capturedAtDist: Math.round(game.liveDistance),
+      ...snap,
+      seed: game.runSeed,
+    }
+    const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `surfi-capture-${snap.atTickId}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    console.log(`SURFI capture: ${snap.frameCount} ticks at dist ${Math.round(game.liveDistance)}, seg ${gen.segmentAt(game.liveDistance)?.kind ?? '-'}`)
+  }
+
   function snapToSpawn(): void {
     prevPos.copy(controller.pos)
     wireDirty = true
+    // a fresh run: re-arm the recorder so its rolling window and course
+    // tracking start from spawn (keeps capture dist/segment accurate)
+    if (recordingOn) {
+      recorder.reset(game.runSeed)
+      recorder.enabled = true
+    }
   }
 
   // fly / noclip
@@ -226,6 +267,7 @@ function boot(): void {
     hud.setSpeed(speed)
     hud.setDistance(game.distance)
     panel.setFps(loop.fps)
+    if (readout.visible) readout.update(controller, gen, game.liveDistance)
     if (wireGroup.visible && wireDirty) rebuildWires()
     syncOverlay()
 

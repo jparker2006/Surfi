@@ -24,6 +24,8 @@ export function mulberry32(seed: number): () => number {
 interface ActiveSegment {
   segment: Segment
   meshes: THREE.Mesh[]
+  // stable monotonic id (never reused while the run lives), for the debug readout
+  id: number
 }
 
 const segDir = new THREE.Vector3()
@@ -104,6 +106,7 @@ export class CourseGenerator {
 
   private genNext(): void {
     const isOpener = this.segmentCount === 0
+    const id = this.segmentCount
     const kind = this.pickKind()
     const segment = buildSegment(kind, this.cursor, this.cfg, this.rng, isOpener)
     this.segmentCount++
@@ -114,7 +117,7 @@ export class CourseGenerator {
       this.group.add(mesh)
       meshes.push(mesh)
     }
-    this.segments.push({ segment, meshes })
+    this.segments.push({ segment, meshes, id })
     for (const p of segment.spine) {
       const last = this.spine[this.spine.length - 1]
       if (!last || p.cum > last.cum) this.spine.push(p)
@@ -170,6 +173,17 @@ export class CourseGenerator {
       }
     }
     return { dist: bestDist, index: bestIndex, killY: bestKillY }
+  }
+
+  // Active segment containing a course distance: its kind (straight, curve,
+  // spine, gap) and stable id. Debug readout only, so a linear scan over the
+  // handful of live segments is fine.
+  segmentAt(dist: number): { kind: SegmentKind; id: number } | null {
+    for (const s of this.segments) {
+      const start = s.segment.spine.length > 0 ? s.segment.spine[0].cum : 0
+      if (dist >= start && dist <= s.segment.endCum) return { kind: s.segment.kind, id: s.id }
+    }
+    return null
   }
 
   // Unit xz direction of the course at a spine index, pointing toward

@@ -24,6 +24,8 @@ export class InputSystem {
   onRespawn: (() => void) | null = null
   onToggleDebug: (() => void) | null = null
   onToggleMute: (() => void) | null = null
+  // manual capture: dump the recent state window to a file (debug/test only)
+  onCapture: (() => void) | null = null
 
   private readonly keys = {
     forward: false,
@@ -84,6 +86,10 @@ export class InputSystem {
         break
       case 'KeyM':
         if (down) this.onToggleMute?.()
+        break
+      case 'KeyK':
+        // works while pointer-locked mid-play: dump the last state window now
+        if (down) this.onCapture?.()
         break
       case 'Backquote':
       case 'F3':
