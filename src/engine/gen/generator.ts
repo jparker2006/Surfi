@@ -172,6 +172,20 @@ export class CourseGenerator {
     return { dist: bestDist, index: bestIndex, killY: bestKillY }
   }
 
+  // Unit xz direction of the course at a spine index, pointing toward
+  // increasing distance. The anomaly recorder dots player velocity against
+  // this to detect backward (down-course) drift.
+  spineDirAt(index: number): { x: number; z: number } {
+    const pts = this.spine
+    if (pts.length < 2) return { x: 0, z: 0 }
+    const i = Math.max(0, Math.min(pts.length - 2, index))
+    const dx = pts[i + 1].pos.x - pts[i].pos.x
+    const dz = pts[i + 1].pos.z - pts[i].pos.z
+    const len = Math.hypot(dx, dz)
+    if (len < 1e-6) return { x: 0, z: 0 }
+    return { x: dx / len, z: dz / len }
+  }
+
   // spine point at a given course distance, for the test bot
   spineAt(cum: number): { x: number; y: number; z: number; heading: number } | null {
     const pts = this.spine

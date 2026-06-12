@@ -143,13 +143,17 @@ function clipToBrush(
 
   if (enterFrac < leaveFrac && enterFrac > -1 && enterFrac < out.fraction) {
     let chosen = clipPlane
-    // Rampbug fix. At flush piece joints a rider on the neighboring surface
-    // can sit fractionally inside this brush's face planes and "enter" it
-    // through the seam cap or a wall-like bevel: a phantom head-on wall that
-    // zeroes speed. If the sweep started at or under every real face plane,
-    // the geometrically correct contact is the nearest face, so report that.
+    // Rampbug fix. A bevel plane is not a real surface: it only tightens the
+    // swept hull polytope at sharp edges. A seam cap is the flush end face of a
+    // ramp piece. Neither should ever clip a rider's velocity, but at a flush
+    // joint the swept trace can "enter" the brush through one of them and
+    // report it as a head-on wall, stealing surf speed (the contact normal
+    // points across the course). When the sweep started at or under every real
+    // face plane, the rider is on the brush surface and the geometrically
+    // correct contact is the nearest real face, so clip against that instead.
+    // The bevel/seam still bound the sweep fraction; only the clip normal moves.
     const p = planes[chosen]
-    const wallLike = p.seam === true || (p.bevel === true && Math.abs(p.n.y) < 0.35)
+    const wallLike = p.seam === true || p.bevel === true
     if (wallLike && faceMaxD1 <= 0.5 && nearestFace >= 0) {
       chosen = nearestFace
     }

@@ -3,6 +3,7 @@ import './style.css'
 import { consts } from './engine/physics/constants'
 import { boxBrush, brushWireframe } from './engine/physics/brushes'
 import { PlayerController } from './engine/physics/controller'
+import { AnomalyRecorder } from './engine/physics/anomaly'
 import { FixedLoop } from './engine/loop'
 import { InputSystem } from './engine/input'
 import { FPSCamera } from './engine/camera'
@@ -72,6 +73,11 @@ function boot(): void {
   controller.pos.copy(SPAWN)
   prevPos.copy(SPAWN)
 
+  // anomaly recorder: dev/test only, drives the trap sweeps and regressions
+  const recordingOn = import.meta.env.DEV || testMode
+  const recorder = new AnomalyRecorder()
+  controller.recording = recordingOn
+
   const input = new InputSystem(testMode)
   input.attach(renderer.domElement)
 
@@ -97,6 +103,14 @@ function boot(): void {
   wireGroup.visible = false
   scene.add(wireGroup)
   let wireDirty = true
+
+  // debug: a marker that flashes when the recorder catches an anomaly. The live
+  // wireframes already show the contact geometry the player is pinned against.
+  const anomalyMarker = document.createElement('div')
+  anomalyMarker.className = 'anomaly-flash'
+  app.appendChild(anomalyMarker)
+  let lastDumpCount = 0
+  let anomalyFlashUntil = 0
 
   function rebuildWires(): void {
     while (wireGroup.children.length > 0) {
@@ -157,8 +171,10 @@ function boot(): void {
     if (panel.state.fly) {
       flyMove(TICK_DT)
     } else if (game.state === 'playing') {
-      controller.tick(input.frame(), gen.collision, TICK_DT)
+      const f = input.frame()
+      controller.tick(f, gen.collision, TICK_DT)
       game.onTick()
+      if (controller.recording) recorder.sample(controller, f, gen)
     }
     updateTestApi(surf, controller, game, loop.tickCount)
   }
@@ -213,6 +229,14 @@ function boot(): void {
     if (wireGroup.visible && wireDirty) rebuildWires()
     syncOverlay()
 
+    // flash the anomaly marker when a new dump lands while debug wires are on
+    const nowMs = performance.now()
+    if (recordingOn && recorder.dumps.length > lastDumpCount) {
+      lastDumpCount = recorder.dumps.length
+      if (wireGroup.visible) anomalyFlashUntil = nowMs + 400
+    }
+    anomalyMarker.style.opacity = nowMs < anomalyFlashUntil ? '1' : '0'
+
     const now = performance.now() / 1000
     const dt = fxTimeLast < 0 ? 0.016 : Math.min(0.1, now - fxTimeLast)
     fxTimeLast = now
@@ -238,8 +262,11 @@ function boot(): void {
   const loop = new FixedLoop(TICK_DT, tick, render)
   // window.__surf and __surfInput exist in dev builds and under ?test=1 only
   const surf = installTestApi(controller, input, game, gen, tick, import.meta.env.DEV || testMode)
+  if (recordingOn) {
+    ;(window as unknown as Record<string, unknown>).__surfAnomaly = recorder
+  }
   if (testMode) {
-    ;(window as unknown as Record<string, unknown>).__surfDebug = { gen, controller, game, consts }
+    ;(window as unknown as Record<string, unknown>).__surfDebug = { gen, controller, game, consts, recorder }
   }
 
   // flow: click starts (and pointer locks); any key respawns from death

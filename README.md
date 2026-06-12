@@ -59,11 +59,23 @@ bypassed):
   for course queries.
 - `window.__surfInput.set({forward, back, left, right, jump, yaw, pitch})`:
   programmatic input injection.
+- `window.__surfAnomaly`: the anomaly recorder (dev/test only), which tallies
+  trap detectors (stuck, backward drift, multi plane corner, start solid, and
+  eye into geometry) and dumps the surrounding 120 tick window on a trigger.
 - `?seed=N` forces a generation seed.
 
 The milestone gates live in `tests/`: `m1-gate.js` (speed gain, passive
 slide, tick determinism), `m2-gate.js` (scripted survival, death, respawn,
 persistence), and `bot.js` (the pure pursuit surf bot used to drive runs).
+
+Trap regression tooling, also in `tests/`, all run by dynamic import inside a
+`?test=1` page (for example `await import('/tests/trap-repro.js')`):
+`sloppy-bot.js` (a bot that deliberately courts the surf trap by riding high
+near seams and over steering into the ridge), `anomaly-sweep.js` (drives the
+clean and sloppy bots across many seeds with the recorder on and aggregates
+detector counts), and `trap-repro.js` (the permanent regression: a fixed
+replay of the bevel wall trap, an end to end backward drift check, and an
+odometer monotonicity check).
 
 ## Architecture
 

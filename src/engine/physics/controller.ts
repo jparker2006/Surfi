@@ -17,6 +17,22 @@ export interface InputFrame {
   pitch: number
 }
 
+// Per-tick diagnostics for the anomaly recorder. Populated only while
+// controller.recording is true, so the normal tick path stays allocation free
+// and branch cheap. planes holds the clip normals at the moment of maximum
+// simultaneous accumulation this tick.
+export interface TickDiag {
+  planeCount: number
+  planes: THREE.Vector3[]
+  startSolid: boolean
+  allSolid: boolean
+  horizBefore: number
+  horizAfter: number
+  stopReason: string
+  onSurfPlane: boolean
+  grounded: boolean
+}
+
 const MAX_CLIP_PLANES = 5
 const GROUND_NORMAL_Y = 0.7
 
@@ -51,9 +67,33 @@ export class PlayerController {
   stopReason = ''
   readonly half = new THREE.Vector3()
 
+  // dev/test only: when true, tick() fills diag for the anomaly recorder
+  recording = false
+  readonly diag: TickDiag = {
+    planeCount: 0,
+    planes: [
+      new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(),
+      new THREE.Vector3(), new THREE.Vector3(),
+    ],
+    startSolid: false,
+    allSolid: false,
+    horizBefore: 0,
+    horizAfter: 0,
+    stopReason: '',
+    onSurfPlane: false,
+    grounded: false,
+  }
+
   tick(input: InputFrame, brushes: Brush[], dt: number): void {
     this.half.set(consts.hullWidth / 2, consts.hullHeight / 2, consts.hullWidth / 2)
     this.onSurfPlane = false
+
+    if (this.recording) {
+      this.diag.planeCount = 0
+      this.diag.startSolid = false
+      this.diag.allSolid = false
+      this.diag.horizBefore = Math.hypot(this.vel.x, this.vel.z)
+    }
 
     // wishdir: horizontal input direction rotated by view yaw
     const fmove = (input.forward ? 1 : 0) - (input.back ? 1 : 0)
@@ -103,6 +143,13 @@ export class PlayerController {
     this.vel.z = THREE.MathUtils.clamp(this.vel.z, -mv, mv)
 
     this.categorize(brushes)
+
+    if (this.recording) {
+      this.diag.horizAfter = Math.hypot(this.vel.x, this.vel.z)
+      this.diag.stopReason = this.stopReason
+      this.diag.onSurfPlane = this.onSurfPlane
+      this.diag.grounded = this.grounded
+    }
   }
 
   // Exact Source acceleration. Airborne callers pass wishspeed already capped
@@ -164,6 +211,11 @@ export class PlayerController {
       moveEnd.copy(this.pos).addScaledVector(this.vel, timeLeft)
       traceHull(this.pos, moveEnd, this.half, brushes, tr)
 
+      if (this.recording) {
+        if (tr.startSolid) this.diag.startSolid = true
+        if (tr.allSolid) this.diag.allSolid = true
+      }
+
       if (tr.allSolid) {
         this.vel.set(0, 0, 0)
         this.stopReason = 'allsolid'
@@ -200,6 +252,11 @@ export class PlayerController {
 
       planes[numplanes].copy(tr.normal)
       numplanes++
+
+      if (this.recording && numplanes > this.diag.planeCount) {
+        this.diag.planeCount = numplanes
+        for (let p = 0; p < numplanes; p++) this.diag.planes[p].copy(planes[p])
+      }
 
       // find a plane the clipped velocity does not re-enter
       let i = 0

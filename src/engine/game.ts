@@ -74,6 +74,9 @@ export class Game {
 
     const res = this.gen.progress(this.controller.pos, this.spineIndex)
     this.spineIndex = res.index
+    // the odometer is the peak arc length reached this run: it only ever grows.
+    // If the player slides back down the course the projected distance drops,
+    // but the score holds, so backward motion never counts down on screen.
     if (res.dist > this.distance) this.distance = res.dist
     this.gen.ensure(res.dist)
 
