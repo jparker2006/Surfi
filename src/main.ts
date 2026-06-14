@@ -16,14 +16,17 @@ import { PaletteDriver } from './engine/fx/palette'
 import { PostChain } from './engine/fx/post'
 import { ParticleField } from './engine/fx/particles'
 import { FxProbe } from './engine/fx/fxprobe'
-import { acidsurf } from './levels/acidsurf'
+import { ACTIVE_LEVEL, LEVEL_TILES, type LevelTile } from './levels'
+import { SettingsStore } from './engine/settings'
+import { Landing } from './ui/landing'
+import { SettingsPanel } from './ui/settings'
 import { LiveReadout } from './engine/livereadout'
 import { installTestApi, updateTestApi, isTestMode } from './testapi'
 
-// Engine bootstrap. The level is a plain config module; acidsurf is the
-// hardcoded v1 level. No level select, no routing.
+// Engine bootstrap. The level is a plain config module bound at boot; the
+// landing renders a tile per registered level and launches this one.
 
-const level = acidsurf
+const level = ACTIVE_LEVEL
 Object.assign(consts, level.physics ?? {})
 
 // Build stamp: identify the running build so a stale deploy is obvious. Logged
@@ -46,9 +49,11 @@ if (touchDevice) {
 
 function boot(): void {
 
-  // renderer
+  // renderer. Cap the device pixel ratio at 1.5: the fullscreen iridescence
+  // field is fragment-heavy, so on a high-DPI display rendering at a full 2x
+  // would blow the fill budget. 1.5x stays sharp and holds 60fps.
   const renderer = new THREE.WebGLRenderer({ antialias: true })
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
   renderer.setSize(window.innerWidth, window.innerHeight)
   app.appendChild(renderer.domElement)
 
@@ -97,18 +102,19 @@ function boot(): void {
   // debug only: live contact readout, toggled with the debug panel
   const readout = new LiveReadout(app, BUILD_LABEL)
   const game = new Game(level, controller, gen, SPAWN, testMode)
-  const drone = new Drone(level.audio)
-  hud.setMuted(drone.muted)
-  hud.onMuteToggle = () => {
-    drone.ensureStarted()
-    drone.toggleMute()
-    hud.setMuted(drone.muted)
-  }
-  input.onToggleMute = () => {
-    drone.ensureStarted()
-    drone.toggleMute()
-    hud.setMuted(drone.muted)
-  }
+
+  // player settings: volume, look sensitivity, reduce intensity. Persisted to
+  // localStorage and wired live (read on load and on every change).
+  const settings = new SettingsStore()
+  const drone = new Drone(level.audio, settings)
+  input.setSensitivity(settings.get().sensitivity)
+  // cached fx intensity multiplier (the reduce-intensity comfort toggle); read
+  // per frame without touching the store
+  let fxScale = settings.fxScale
+  settings.subscribe((s) => {
+    input.setSensitivity(s.sensitivity)
+    fxScale = settings.fxScale
+  })
 
   // debug wireframes rebuilt lazily from the live collision set
   const wireMat = new THREE.LineBasicMaterial({ color: 0x00ff88 })
@@ -149,7 +155,7 @@ function boot(): void {
     readout.toggle(!readout.visible)
   }
   input.onRespawn = () => {
-    if (game.state !== 'start') {
+    if (game.state !== 'menu') {
       game.startRun()
       snapToSpawn()
     }
@@ -222,12 +228,48 @@ function boot(): void {
     updateTestApi(surf, controller, game, loop.tickCount)
   }
 
+  // entry landing (level select + settings) over the live shader. Built only
+  // outside test mode; in ?test=1 the run auto-starts and the gates are
+  // unchanged. The settings panel is shared with the wipeout screen.
+  const settingsPanel = new SettingsPanel(app, settings)
+  let landing: Landing | null = null
+
+  // launch sequence: pointer lock MUST be requested synchronously here, inside
+  // the tile-click user gesture (a lock requested after the transition would be
+  // rejected). The run starts on the transition's completion.
+  // the tile is accepted for the registry contract; the engine is bound to the
+  // single ACTIVE_LEVEL today, so launching always starts that level
+  function launch(_tile: LevelTile): void {
+    drone.ensureStarted()
+    if (!testMode) {
+      const r = renderer.domElement.requestPointerLock() as unknown
+      if (r instanceof Promise) r.catch(() => {})
+    }
+    const begin = (): void => {
+      game.startRun()
+      snapToSpawn()
+    }
+    if (landing) landing.launchTransition(begin)
+    else begin()
+  }
+
+  if (!testMode) {
+    landing = new Landing(app, settings, settingsPanel, { onLaunch: launch })
+  }
+
+  // wipeout "menu" button: back to the landing without the full intro
+  hud.onMenu = () => {
+    game.toMenu()
+    if (!testMode) document.exitPointerLock()
+    landing?.show({ fast: true })
+  }
+
   // overlay management: re-render the overlay DOM only when the key changes
   let overlayKey = ''
   function syncOverlay(): void {
     let key: string
-    if (game.state === 'start') {
-      key = 'start'
+    if (game.state === 'menu') {
+      key = 'menu'
     } else if (game.state === 'dead') {
       key = `dead:${Math.floor(game.distance)}`
     } else if (!testMode && !input.pointerLocked) {
@@ -235,14 +277,18 @@ function boot(): void {
     } else {
       key = 'none'
     }
+    // suppress pointer lock on the menu so a click on the landing does not grab
+    // the cursor behind it
+    input.lockEnabled = game.state !== 'menu'
     if (key === overlayKey) return
     overlayKey = key
 
-    if (key === 'start') {
-      hud.showStart('SURFI', level.title, false)
+    if (key === 'menu') {
+      hud.hideOverlay()
       hud.setHudVisible(false)
+      landing?.show()
     } else if (key === 'resume') {
-      hud.showStart('SURFI', level.title, true)
+      hud.showResume()
     } else if (key.startsWith('dead')) {
       hud.showDeath({
         distance: game.distance,
@@ -293,17 +339,21 @@ function boot(): void {
     const raw = THREE.MathUtils.clamp(speed / level.aesthetic.speedForMaxFx, 0, 1)
     const target = raw * raw * (3 - 2 * raw) // smoothstep curve
     smoothedIntensity += (target - smoothedIntensity) * Math.min(1, dt * 5)
+    // reduce-intensity comfort toggle scales the visual fx (flow, saturation,
+    // brightness, bloom, chromatic, fov); audio keeps tracking real speed
+    const fxI = smoothedIntensity * fxScale
 
     // fov kick, horizontal degrees, smoothed
-    const targetFov = consts.fov + level.aesthetic.fovKick * smoothedIntensity
+    const targetFov = consts.fov + level.aesthetic.fovKick * fxI
     if (Math.abs(targetFov - currentHFov) > 0.01) {
       currentHFov += (targetFov - currentHFov) * Math.min(1, dt * 6)
       fpsCamera.setHorizontalFov(currentHFov)
     }
 
-    palette.update(dt, now, smoothedIntensity, fpsCamera.camera.position)
-    particles.update(fpsCamera.camera.position, smoothedIntensity, palette.currentHue)
-    post.update(smoothedIntensity)
+    palette.update(dt, now, fxI, fpsCamera.camera.position)
+    hud.update(palette, smoothedIntensity)
+    particles.update(fpsCamera.camera.position, fxI, palette.currentHue)
+    post.update(fxI)
     drone.update(smoothedIntensity)
     post.render()
 
@@ -341,26 +391,48 @@ function boot(): void {
   if (testMode) {
     ;(window as unknown as Record<string, unknown>).__surfDebug = { gen, controller, game, consts, recorder, palette }
   }
+  if (recordingOn) {
+    // verification hooks: drive the real launch path and read live settings/fx
+    ;(window as unknown as Record<string, unknown>).__surfUi = {
+      launch: (id?: string) => {
+        const t =
+          LEVEL_TILES.find((x) => x.id === id && x.status === 'playable') ??
+          LEVEL_TILES.find((x) => x.status === 'playable')
+        if (t) launch(t)
+      },
+      menu: () => hud.onMenu?.(),
+      audioGain: () => drone.targetGain,
+      sensitivity: () => input.sensitivity,
+      bloom: () => post.bloomStrength,
+      fxScale: () => fxScale,
+      fps: () => loop.fps,
+    }
+  }
 
-  // flow: click starts (and pointer locks); any key respawns from death
+  // death fast loop: a click or any key (except the debug and menu keys) drops
+  // straight back in, no landing animation. Launching from the menu is the tile
+  // click only (handled by the landing), so the canvas click does not start a
+  // run from the menu.
   renderer.domElement.addEventListener('click', () => {
     drone.ensureStarted()
-    if (game.state === 'start') {
-      game.startRun()
-      snapToSpawn()
-    } else if (game.state === 'dead') {
+    if (game.state === 'dead') {
       game.startRun()
       snapToSpawn()
     }
   })
   window.addEventListener('keydown', (e) => {
-    if (game.state === 'dead' && e.code !== 'Backquote' && e.code !== 'F3') {
+    if (
+      game.state === 'dead' &&
+      e.code !== 'Backquote' &&
+      e.code !== 'F3' &&
+      e.code !== 'Escape'
+    ) {
       game.startRun()
       snapToSpawn()
     }
   })
 
-  // build a course behind the start screen so the world is never empty
+  // build a course behind the landing so the world is never empty
   gen.reset(level.generation.fixedSeed)
   if (testMode) {
     game.startRun()

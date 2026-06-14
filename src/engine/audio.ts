@@ -1,21 +1,36 @@
 import type { AudioConfig } from '../levels/types'
+import type { SettingsStore } from './settings'
 
 // Speed-reactive synth drone: two detuned saws and a sub sine through a low
-// pass filter. Speed intensity opens the filter and swells the volume.
-// Starts only after a user gesture; mute state persists in localStorage.
+// pass filter. Speed intensity opens the filter; the settings master volume
+// swells the gain. Starts only after a user gesture. Volume lives in settings
+// (replacing the old mute toggle) and applies live.
 
-const MUTE_KEY = 'surfi:muted'
+// gain at full volume; the unmuted level the old mute toggle used
+const MAX_GAIN = 0.055
 
 export class Drone {
-  muted: boolean
   private ctx: AudioContext | null = null
   private filter: BiquadFilterNode | null = null
   private gain: GainNode | null = null
   private readonly cfg: AudioConfig
+  private volume: number
 
-  constructor(cfg: AudioConfig) {
+  constructor(cfg: AudioConfig, settings: SettingsStore) {
     this.cfg = cfg
-    this.muted = localStorage.getItem(MUTE_KEY) === '1'
+    this.volume = settings.get().volume
+    settings.subscribe((s) => {
+      if (s.volume !== this.volume) {
+        this.volume = s.volume
+        this.applyVolume()
+      }
+    })
+  }
+
+  // perceptual map 0..100 -> 0..MAX_GAIN (square curve so the low end is usable)
+  get targetGain(): number {
+    const v = this.volume / 100
+    return MAX_GAIN * v * v
   }
 
   // call from a user gesture handler
@@ -58,7 +73,7 @@ export class Drone {
     gain.connect(ctx.destination)
     this.filter = filter
     this.gain = gain
-    this.applyMute()
+    this.applyVolume()
   }
 
   update(intensity: number): void {
@@ -68,15 +83,8 @@ export class Drone {
     this.filter.frequency.setTargetAtTime(f, this.ctx.currentTime, 0.08)
   }
 
-  toggleMute(): void {
-    this.muted = !this.muted
-    localStorage.setItem(MUTE_KEY, this.muted ? '1' : '0')
-    this.applyMute()
-  }
-
-  private applyMute(): void {
+  private applyVolume(): void {
     if (!this.ctx || !this.gain) return
-    const target = this.muted ? 0 : 0.055
-    this.gain.gain.setTargetAtTime(target, this.ctx.currentTime, 0.25)
+    this.gain.gain.setTargetAtTime(this.targetGain, this.ctx.currentTime, 0.25)
   }
 }

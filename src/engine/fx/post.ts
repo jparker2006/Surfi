@@ -73,6 +73,11 @@ export class PostChain {
     this.composer.setSize(w, h)
   }
 
+  // current bloom strength, for the fx diagnostics probe
+  get bloomStrength(): number {
+    return this.bloom.strength
+  }
+
   update(intensity: number): void {
     const c = this.cfg
     this.bloom.strength = c.bloom.base + (c.bloom.max - c.bloom.base) * intensity

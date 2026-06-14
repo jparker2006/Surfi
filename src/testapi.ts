@@ -61,7 +61,7 @@ export function installTestApi(
     stopReason: '',
     distance: 0,
     tick: 0,
-    state: 'start',
+    state: 'menu',
     best: 0,
     teleport(x, y, z) {
       game.startRun()

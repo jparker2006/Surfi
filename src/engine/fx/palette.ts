@@ -60,13 +60,15 @@ float warp2(vec3 p, float t, out float swirl) {
   swirl = q.x;
   return fbm(p + 3.5 * r);
 }
-// cheaper single level warp for the fullscreen background
+// cheaper single level warp for the fullscreen background. This covers the
+// whole frame (the dominant fragment cost), so it is deliberately lean: a two
+// component warp reused for the third axis, and few octaves. The field stays
+// smooth and organic at this scale, so the saving is invisible.
 float warp1(vec3 p, float t, out float swirl) {
-  vec3 q = vec3(fbm(p + vec3(0.0, 0.08 * t, 0.0)),
-                fbm(p + vec3(3.2, 1.3, 2.8) - vec3(0.06 * t, 0.0, 0.0)),
-                fbm(p + vec3(1.7, 5.2, 4.4)));
+  vec2 q = vec2(fbm(p + vec3(0.0, 0.08 * t, 0.0)),
+                fbm(p + vec3(3.2, 1.3, 2.8) - vec3(0.06 * t, 0.0, 0.0)));
   swirl = q.y;
-  return fbm(p + 3.0 * q);
+  return fbm(p + 3.0 * vec3(q.x, q.y, q.x));
 }
 // IQ cosine palette, tuned for a full spectrum iridescent rainbow
 vec3 iris(float t, float sat) {
@@ -156,7 +158,7 @@ void main() {
 `
 
 const BG_FRAG = `
-#define OCTAVES 3
+#define OCTAVES 2
 precision highp float;
 uniform float uFlow;
 uniform float uCycle;
@@ -248,6 +250,14 @@ export class PaletteDriver {
     // initialize the fog color from the palette so the very first frame is
     // already correct (no uninitialized-uniform flash on load)
     this.computeFogColor()
+  }
+
+  // current iridescent accent for the HUD, sampled off the same integrated
+  // cycle the world uses (so the UI breathes with the shader). phaseOffset lets
+  // callers pull distinct-but-coherent accents (speed vs distance vs wipeout).
+  sampleAccent(out: THREE.Color, phaseOffset = 0): THREE.Color {
+    this.sampleIris(this.cycle + phaseOffset, 0.6, out)
+    return out
   }
 
   // IQ palette evaluated on the CPU, for the fog color and any tint

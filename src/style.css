@@ -34,6 +34,15 @@ body {
   50% { opacity: 0.45; }
 }
 
+/* palette-driven HUD accents, set live from the shader. Fallbacks keep the
+   first frame correct before hud.update runs. */
+:root {
+  --hud-accent: #be78ff;
+  --hud-accent-distance: #8ad0ff;
+  --hud-accent-wipe: #ff7cf0;
+  --hud-intensity: 0;
+}
+
 .hud-speed {
   position: absolute;
   bottom: 6vh;
@@ -41,9 +50,11 @@ body {
   transform: translateX(-50%);
   font-size: 60px;
   font-weight: bold;
-  color: #e9d5ff;
-  text-shadow: 0 0 14px rgba(190, 120, 255, 0.95), 0 0 42px rgba(120, 80, 255, 0.6);
-  animation: hueShift 24s linear infinite;
+  /* fixed high-contrast fill: the speed number must always read instantly */
+  color: #fdfbff;
+  text-shadow:
+    0 0 calc(12px + var(--hud-intensity) * 26px) var(--hud-accent),
+    0 0 calc(34px + var(--hud-intensity) * 60px) var(--hud-accent);
   pointer-events: none;
 }
 
@@ -54,9 +65,8 @@ body {
   transform: translateX(-50%);
   font-size: 28px;
   letter-spacing: 0.2em;
-  color: #d8c5f5;
-  text-shadow: 0 0 10px rgba(190, 120, 255, 0.8);
-  animation: hueShift 24s linear infinite;
+  color: #f2ecff;
+  text-shadow: 0 0 calc(9px + var(--hud-intensity) * 14px) var(--hud-accent-distance);
   pointer-events: none;
 }
 
@@ -79,11 +89,10 @@ body {
   font-size: 76px;
   letter-spacing: 0.38em;
   margin-left: 0.38em;
+  color: #fdfbff;
   text-shadow:
-    0 0 18px rgba(205, 130, 255, 1),
-    0 0 60px rgba(130, 80, 255, 0.85),
-    0 0 120px rgba(80, 200, 255, 0.5);
-  animation: hueShift 16s linear infinite;
+    0 0 22px var(--hud-accent-wipe),
+    0 0 70px var(--hud-accent-wipe);
 }
 
 .hud-overlay p {
@@ -143,7 +152,31 @@ body {
 }
 
 .hud-overlay .stat-value {
-  text-shadow: 0 0 12px rgba(190, 120, 255, 0.9);
+  color: #fdfbff;
+  text-shadow: 0 0 14px var(--hud-accent-wipe);
+}
+
+/* wipeout: exit to the landing. Clickable even though the overlay passes
+   pointer events through (only usable once the cursor is free, e.g. after Esc) */
+.hud-overlay .death-menu {
+  pointer-events: auto;
+  margin-top: 22px;
+  padding: 9px 22px;
+  background: rgba(16, 8, 30, 0.5);
+  border: 1px solid var(--hud-accent-wipe);
+  border-radius: 5px;
+  color: #fdfbff;
+  font-family: 'Courier New', monospace;
+  font-size: 15px;
+  letter-spacing: 0.22em;
+  cursor: pointer;
+  text-shadow: 0 0 10px var(--hud-accent-wipe);
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.hud-overlay .death-menu:hover {
+  background: rgba(40, 18, 64, 0.7);
+  transform: scale(1.05);
 }
 
 .blocker {
@@ -179,26 +212,6 @@ body {
   opacity: 0.85;
 }
 
-.hud-mute {
-  position: absolute;
-  bottom: 18px;
-  right: 18px;
-  padding: 8px 14px;
-  background: rgba(20, 8, 36, 0.6);
-  border: 1px solid rgba(190, 120, 255, 0.45);
-  border-radius: 4px;
-  color: #d8c5f5;
-  font-family: 'Courier New', monospace;
-  font-size: 13px;
-  letter-spacing: 0.12em;
-  cursor: pointer;
-  text-shadow: 0 0 8px rgba(190, 120, 255, 0.7);
-}
-
-.hud-mute:hover {
-  background: rgba(40, 16, 64, 0.8);
-}
-
 /* debug only: pulses when the anomaly recorder catches a trap */
 .anomaly-flash {
   position: absolute;
@@ -226,4 +239,210 @@ body {
   pointer-events: none;
   text-shadow: 0 0 6px rgba(150, 90, 230, 0.6);
   z-index: 20;
+}
+
+/* ---- entry landing (level select + settings), over the live shader ---- */
+.landing {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  /* translucent scrim so the flowing iridescence dome reads through */
+  background: radial-gradient(ellipse at center, rgba(10, 4, 22, 0.32) 0%, rgba(6, 3, 14, 0.66) 80%);
+  color: #efe6ff;
+  text-align: center;
+  font-family: 'Courier New', monospace;
+}
+
+.landing-title {
+  font-size: 88px;
+  letter-spacing: 0.4em;
+  margin-left: 0.4em;
+  font-weight: bold;
+  color: #fdfbff;
+  text-shadow: 0 0 26px var(--hud-accent), 0 0 80px var(--hud-accent);
+}
+
+.landing-tagline {
+  font-size: 16px;
+  letter-spacing: 0.5em;
+  margin-left: 0.5em;
+  opacity: 0.8;
+  color: var(--hud-accent-distance);
+  text-shadow: 0 0 12px var(--hud-accent-distance);
+}
+
+.landing-tiles {
+  display: flex;
+  gap: 26px;
+  margin-top: 22px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.tile {
+  position: relative;
+  width: 260px;
+  padding: 26px 22px;
+  border: 1px solid var(--hud-accent);
+  border-radius: 10px;
+  background: rgba(14, 7, 28, 0.42);
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+  box-shadow: 0 0 0 rgba(0, 0, 0, 0);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.tile:hover {
+  box-shadow: 0 0 26px var(--hud-accent);
+}
+
+.tile .tile-title {
+  font-size: 30px;
+  letter-spacing: 0.16em;
+  color: #fdfbff;
+  text-shadow: 0 0 14px var(--hud-accent);
+}
+
+.tile .tile-sub {
+  margin-top: 8px;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  opacity: 0.7;
+}
+
+.tile .tile-go {
+  margin-top: 18px;
+  font-size: 13px;
+  letter-spacing: 0.24em;
+  color: var(--hud-accent-distance);
+  text-shadow: 0 0 10px var(--hud-accent-distance);
+}
+
+.tile.soon {
+  cursor: default;
+  opacity: 0.4;
+  border-color: rgba(190, 140, 255, 0.3);
+}
+
+.tile.soon:hover {
+  box-shadow: none;
+}
+
+.landing-hint {
+  margin-top: 26px;
+  font-size: 13px;
+  line-height: 1.9;
+  opacity: 0.62;
+}
+
+.landing-settings-btn {
+  margin-top: 6px;
+  padding: 8px 20px;
+  background: rgba(16, 8, 30, 0.5);
+  border: 1px solid var(--hud-accent-distance);
+  border-radius: 5px;
+  color: #f2ecff;
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  letter-spacing: 0.2em;
+  cursor: pointer;
+  text-shadow: 0 0 8px var(--hud-accent-distance);
+  transition: background 0.15s ease;
+}
+
+.landing-settings-btn:hover {
+  background: rgba(40, 18, 64, 0.7);
+}
+
+/* ---- settings panel (shown from landing and wipeout) ---- */
+.settings-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 3, 14, 0.6);
+  font-family: 'Courier New', monospace;
+  color: #efe6ff;
+}
+
+.settings-card {
+  width: 420px;
+  max-width: 90vw;
+  padding: 30px 32px;
+  background: rgba(14, 7, 28, 0.92);
+  border: 1px solid var(--hud-accent);
+  border-radius: 12px;
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+}
+
+.settings-card h2 {
+  font-size: 24px;
+  letter-spacing: 0.3em;
+  margin-left: 0.3em;
+  margin-bottom: 22px;
+  color: #fdfbff;
+  text-shadow: 0 0 14px var(--hud-accent);
+}
+
+.settings-row {
+  margin: 18px 0;
+}
+
+.settings-row label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  margin-bottom: 8px;
+  opacity: 0.85;
+}
+
+.settings-row .val {
+  color: var(--hud-accent-distance);
+  text-shadow: 0 0 8px var(--hud-accent-distance);
+}
+
+.settings-row input[type='range'] {
+  width: 100%;
+  accent-color: #c98cff;
+  cursor: pointer;
+}
+
+.settings-row.toggle label {
+  cursor: pointer;
+}
+
+.settings-row.toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: #c98cff;
+  cursor: pointer;
+}
+
+.settings-close {
+  margin-top: 26px;
+  width: 100%;
+  padding: 10px;
+  background: rgba(40, 18, 64, 0.5);
+  border: 1px solid var(--hud-accent);
+  border-radius: 6px;
+  color: #fdfbff;
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+  letter-spacing: 0.22em;
+  cursor: pointer;
+  text-shadow: 0 0 10px var(--hud-accent);
+  transition: background 0.15s ease;
+}
+
+.settings-close:hover {
+  background: rgba(60, 26, 92, 0.7);
 }

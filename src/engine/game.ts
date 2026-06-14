@@ -6,10 +6,13 @@ import * as THREE from 'three'
 // Run state machine: start screen, playing, dead. Respawn is a pure state
 // reset so the restart loop stays well under one second.
 
-export type GameState = 'start' | 'playing' | 'dead'
+// 'menu' is the landing (level select + settings); 'playing' is a live run;
+// 'dead' is the wipeout screen. startRun() drives menu->playing and the death
+// fast respawn; toMenu() returns to the landing without resetting the course.
+export type GameState = 'menu' | 'playing' | 'dead'
 
 export class Game {
-  state: GameState = 'start'
+  state: GameState = 'menu'
   distance = 0
   // live projected course distance (not the peak odometer above): where the
   // player actually is right now, for the debug readout
@@ -95,6 +98,13 @@ export class Game {
     if (this.state !== 'playing') return
     this.newBest = this.recordBest()
     this.state = 'dead'
+  }
+
+  // exit a run back to the landing without resetting the course (the live shader
+  // keeps rendering behind the menu). Saves any best reached this run.
+  toMenu(): void {
+    this.recordBest()
+    this.state = 'menu'
   }
 
   // used by the test api: teleports must always land in a live run

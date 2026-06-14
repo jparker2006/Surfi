@@ -21,9 +21,15 @@ export class InputSystem {
   yaw = 0
   pitch = 0
   pointerLocked = false
+  // look sensitivity (degrees per mouse count). Defaults to the frozen constant
+  // but is overridden live from settings; constants.ts itself stays untouched.
+  // The M1 gate injects yaw/pitch directly, so this is never on its path.
+  sensitivity = consts.sensitivity
+  // when false, a canvas click does not grab the pointer (used on the menu so a
+  // stray click behind the landing does not capture the cursor)
+  lockEnabled = true
   onRespawn: (() => void) | null = null
   onToggleDebug: (() => void) | null = null
-  onToggleMute: (() => void) | null = null
   // manual capture: dump the recent state window to a file (debug/test only)
   onCapture: (() => void) | null = null
 
@@ -55,7 +61,7 @@ export class InputSystem {
     window.addEventListener('keyup', (e) => this.onKey(e, false))
 
     el.addEventListener('click', () => {
-      if (!this.testMode && document.pointerLockElement !== el) {
+      if (!this.testMode && this.lockEnabled && document.pointerLockElement !== el) {
         // returns a promise in modern browsers; rejection (iframes, synthetic
         // clicks) must not surface as an unhandled error
         const r = el.requestPointerLock() as unknown
@@ -67,8 +73,8 @@ export class InputSystem {
     })
     document.addEventListener('mousemove', (e) => {
       if (!this.pointerLocked || this.injectionActive) return
-      this.yaw -= e.movementX * consts.sensitivity * DEG2RAD
-      this.pitch -= e.movementY * consts.sensitivity * DEG2RAD
+      this.yaw -= e.movementX * this.sensitivity * DEG2RAD
+      this.pitch -= e.movementY * this.sensitivity * DEG2RAD
       if (this.pitch > PITCH_LIMIT) this.pitch = PITCH_LIMIT
       if (this.pitch < -PITCH_LIMIT) this.pitch = -PITCH_LIMIT
     })
@@ -83,9 +89,6 @@ export class InputSystem {
       case 'Space': this.keys.jump = down; e.preventDefault(); break
       case 'KeyR':
         if (down) this.onRespawn?.()
-        break
-      case 'KeyM':
-        if (down) this.onToggleMute?.()
         break
       case 'KeyK':
         // works while pointer-locked mid-play: dump the last state window now
@@ -108,6 +111,11 @@ export class InputSystem {
 
   clearInjection(): void {
     this.injectionActive = false
+  }
+
+  // live look sensitivity override from settings (constants.ts stays frozen)
+  setSensitivity(v: number): void {
+    this.sensitivity = v
   }
 
   // Snapshot of input as seen by the next physics tick.
