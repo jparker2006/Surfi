@@ -18,6 +18,8 @@ export class Game {
   best = 0
   newBest = false
   runSeed = 0
+  // cumulative count of runs started (respawns), for the fx flash diagnostics
+  runCount = 0
 
   private spineIndex = 0
   private readonly level: LevelConfig
@@ -56,6 +58,7 @@ export class Game {
 
   // reset everything for a fresh run; this is both "play" and "respawn"
   startRun(): void {
+    this.runCount++
     this.recordBest()
     this.runSeed = this.pickSeed()
     this.gen.reset(this.runSeed)

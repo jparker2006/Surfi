@@ -15,6 +15,7 @@ import { Drone } from './engine/audio'
 import { PaletteDriver } from './engine/fx/palette'
 import { PostChain } from './engine/fx/post'
 import { ParticleField } from './engine/fx/particles'
+import { FxProbe } from './engine/fx/fxprobe'
 import { acidsurf } from './levels/acidsurf'
 import { LiveReadout } from './engine/livereadout'
 import { installTestApi, updateTestApi, isTestMode } from './testapi'
@@ -53,10 +54,11 @@ function boot(): void {
 
   const scene = new THREE.Scene()
 
-  // the trip: hue cycling materials, starfield, fog color, all speed-reactive
+  // the trip: iridescent flowing materials, fullscreen background field, fog
+  // color, all speed-reactive
   const palette = new PaletteDriver(level.aesthetic)
   scene.background = palette.fogColor
-  scene.add(palette.stars)
+  scene.add(palette.background)
   const particles = new ParticleField(level.aesthetic)
   scene.add(particles.points)
 
@@ -257,6 +259,8 @@ function boot(): void {
 
   // fx state: one normalized speed intensity drives every effect
   const post = new PostChain(renderer, scene, fpsCamera.camera, level.aesthetic)
+  // dev/test-only per-frame luminance + scanline diagnostics
+  const fxProbe = recordingOn ? new FxProbe(renderer) : null
   let fxTimeLast = -1
   let smoothedIntensity = 0
   let currentHFov = consts.fov
@@ -280,7 +284,10 @@ function boot(): void {
     anomalyMarker.style.opacity = nowMs < anomalyFlashUntil ? '1' : '0'
 
     const now = performance.now() / 1000
-    const dt = fxTimeLast < 0 ? 0.016 : Math.min(0.1, now - fxTimeLast)
+    // clamp the fx timestep against frame hitches (a segment spawn rebuilds
+    // geometry on the main thread): a large dt would otherwise snap the smoothed
+    // intensity and the integrated flow forward in one frame, reading as a flash
+    const dt = fxTimeLast < 0 ? 0.016 : Math.min(0.05, now - fxTimeLast)
     fxTimeLast = now
 
     const raw = THREE.MathUtils.clamp(speed / level.aesthetic.speedForMaxFx, 0, 1)
@@ -299,6 +306,17 @@ function boot(): void {
     post.update(smoothedIntensity)
     drone.update(smoothedIntensity)
     post.render()
+
+    // frame diagnostics: read the final back buffer for flash/line detection
+    if (fxProbe) {
+      fxProbe.frame({
+        intensity: smoothedIntensity,
+        speed,
+        state: game.state,
+        gen: gen.changeCount,
+        runs: game.runCount,
+      })
+    }
   }
 
   const loop = new FixedLoop(TICK_DT, tick, render)
@@ -307,8 +325,21 @@ function boot(): void {
   if (recordingOn) {
     ;(window as unknown as Record<string, unknown>).__surfAnomaly = recorder
   }
+  if (fxProbe) {
+    ;(window as unknown as Record<string, unknown>).__surfFx = {
+      start: () => fxProbe.start(),
+      stop: () => fxProbe.stop(),
+      get frames() {
+        return fxProbe.frames
+      },
+      requestScanline: (fy: number, n: number) => fxProbe.requestScanline(fy, n),
+      get scan() {
+        return fxProbe.scanResult
+      },
+    }
+  }
   if (testMode) {
-    ;(window as unknown as Record<string, unknown>).__surfDebug = { gen, controller, game, consts, recorder }
+    ;(window as unknown as Record<string, unknown>).__surfDebug = { gen, controller, game, consts, recorder, palette }
   }
 
   // flow: click starts (and pointer locks); any key respawns from death

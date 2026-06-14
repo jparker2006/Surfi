@@ -56,11 +56,13 @@ export class PostChain {
     this.cfg = cfg
     this.composer = new EffectComposer(renderer)
     this.composer.addPass(new RenderPass(scene, camera))
+    // high threshold: the scene is now inherently bright (luminous iridescence),
+    // so bloom is a halo on the brightest rims only, never a full frame wash
     this.bloom = new UnrealBloomPass(
       new THREE.Vector2(window.innerWidth / 2, window.innerHeight / 2),
       cfg.bloom.base,
-      0.45,
-      0.55,
+      0.4,
+      0.8,
     )
     this.composer.addPass(this.bloom)
     this.caPass = new ShaderPass(CA_VIGNETTE)

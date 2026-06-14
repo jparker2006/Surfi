@@ -35,6 +35,8 @@ export class CourseGenerator {
   readonly group = new THREE.Group()
   // flat collision array: static brushes (spawn platform) plus live segments
   collision: Brush[] = []
+  // cumulative count of spawn/despawn events, for the fx flash diagnostics
+  changeCount = 0
 
   private readonly cfg: GenerationConfig
   private readonly material: THREE.Material
@@ -101,7 +103,10 @@ export class CourseGenerator {
       }
       changed = true
     }
-    if (changed) this.rebuildCollision()
+    if (changed) {
+      this.changeCount++
+      this.rebuildCollision()
+    }
   }
 
   private genNext(): void {

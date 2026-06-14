@@ -33,8 +33,10 @@ vec3 hsv(float h, float s, float v) {
 void main() {
   vec2 c = gl_PointCoord - 0.5;
   float a = smoothstep(0.5, 0.05, length(c));
-  vec3 col = hsv(uHue + vSeed * 0.4, 0.75, 1.0);
-  gl_FragColor = vec4(col, a * (0.06 + 0.5 * uIntensity));
+  // bright motes for a sense of motion; kept subtle so they do not add to the
+  // overall brightness against the already luminous background
+  vec3 col = hsv(uHue + vSeed * 0.4, 0.55, 1.0);
+  gl_FragColor = vec4(col, a * (0.02 + 0.18 * uIntensity));
 }
 `
 
