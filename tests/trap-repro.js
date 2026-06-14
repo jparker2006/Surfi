@@ -40,6 +40,20 @@
 //   fixed start state plus the recorded inputs reproduce it every run.
 //   Signature: along-course speed collapses while horizontal speed stays high.
 //
+//   CASE F (seed 1165723842): the apex FREEZE, captured from real human play
+//   with the K hotkey. A rider surfs up to the very top of a straight ramp and
+//   the hull balances on the convex crest, wedging against the near horizontal
+//   cap bevel over the apex (normal [0, 0.993, -0.119]). The bevel redirect sent
+//   the clip to the steep side face, so the downward velocity into the cap was
+//   never removed: the swept move stayed bevel-bounded at fraction 0 and
+//   tryPlayerMove pumped velocity unbounded while the POSITION froze (the speed
+//   readout climbs past 1400 while the player does not move a unit). None of the
+//   a..g detectors catch it because the speed stays high; detector h (zero
+//   travel while fast) does. The fix: do not redirect a cap-like bevel
+//   (normal.y >= 0.7); clip against it so the hull rides along the crest.
+//   Reproduced from the exact captured start state and held input. Signature:
+//   the hull stops advancing while moving fast.
+//
 //   CASE E (seed 1): the apex stick on a spine segment, a different mechanism
 //   from A/D (no clip at all). The spine flares to a wide ridge (segments.ts),
 //   and before the fix the flare flattened its faces to n.y ~ 0.74, just over
@@ -103,6 +117,20 @@ const CASE_D = {
 // whose flattest side face is the headline number: surf when n.y < 0.7, walkable
 // ground (and so an arrest) at or above it.
 const CASE_E_SEED = 1
+
+// CASE F: the apex freeze, the exact state the K hotkey captured from a human
+// run. Held left strafe (pitch is camera only, so it does not affect the move).
+const CASE_F = {
+  name: 'seed1165723842-apex-freeze',
+  seed: 1165723842,
+  trapDist: 4200,
+  start: {
+    pos: [-149.4192548408259, -476.3775494113337, -4153.400989677263],
+    vel: [-4.5561170481715365, -83.7059282682354, -696.1954725510172],
+  },
+  input: { l: 1, y: 0.006143558967020018 },
+  ticks: 80,
+}
 
 function frameOf(inp) {
   return {
@@ -213,6 +241,38 @@ function replaySpineRide(seed) {
   return { found: true, faceNy: Math.round(faceN.y * 1000) / 1000, peak, minH, endH }
 }
 
+// CASE F replay. Drive the captured wedge state with its held input and measure
+// whether the hull keeps moving. On the bug the position freezes (per-tick travel
+// goes to zero) while speed stays high; on the fix the hull rides off the crest
+// and keeps advancing. Pure controller.tick on a fixed seed, fully deterministic.
+function replayFreeze(c) {
+  const { gen, controller } = window.__surfDebug
+  gen.reset(c.seed)
+  gen.ensure(c.trapDist + 3000)
+  controller.recording = false
+  controller.pos.set(c.start.pos[0], c.start.pos[1], c.start.pos[2])
+  controller.vel.set(c.start.vel[0], c.start.vel[1], c.start.vel[2])
+  controller.grounded = false
+  const frame = frameOf(c.input)
+  let prev = [controller.pos.x, controller.pos.y, controller.pos.z]
+  let frozenTicks = 0
+  let maxSpeed = 0
+  for (let t = 0; t < c.ticks; t++) {
+    controller.tick(frame, gen.collision, TICK)
+    const moved = Math.hypot(controller.pos.x - prev[0], controller.pos.y - prev[1], controller.pos.z - prev[2])
+    prev = [controller.pos.x, controller.pos.y, controller.pos.z]
+    const horiz = Math.hypot(controller.vel.x, controller.vel.z)
+    if (t > 3 && moved < 1 && horiz > 200) frozenTicks++
+    maxSpeed = Math.max(maxSpeed, Math.hypot(controller.vel.x, controller.vel.y, controller.vel.z))
+  }
+  const net = Math.hypot(
+    controller.pos.x - c.start.pos[0],
+    controller.pos.y - c.start.pos[1],
+    controller.pos.z - c.start.pos[2],
+  )
+  return { net, frozenTicks, maxSpeed }
+}
+
 export function runTrapRepro() {
   const results = []
 
@@ -263,6 +323,18 @@ export function runTrapRepro() {
     minHoriz: e.found ? Math.round(e.minH) : 0,
     trapReproduced: collapsedE,
     pass: e.found && surfFace && !collapsedE,
+  })
+
+  // CASE F: the captured apex freeze must not freeze. The hull has to keep
+  // advancing (net travel) and never stall for a run of ticks while fast.
+  const ff = replayFreeze(CASE_F)
+  results.push({
+    case: CASE_F.name,
+    netDisplacement: Math.round(ff.net),
+    frozenTicks: ff.frozenTicks,
+    maxSpeed: Math.round(ff.maxSpeed),
+    trapReproduced: ff.frozenTicks > 5,
+    pass: ff.frozenTicks === 0 && ff.net > 400,
   })
 
   // CASE B: end to end. The deterministic sloppy bot on the trapping seed must

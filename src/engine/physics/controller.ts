@@ -52,6 +52,8 @@ const originalVel = new THREE.Vector3()
 const primalVel = new THREE.Vector3()
 const crease = new THREE.Vector3()
 const clipped = new THREE.Vector3()
+const startMovePos = new THREE.Vector3()
+const lastBlocker = new THREE.Vector3()
 const planes: THREE.Vector3[] = []
 for (let i = 0; i < MAX_CLIP_PLANES; i++) planes.push(new THREE.Vector3())
 const tr = createTraceResult()
@@ -217,12 +219,15 @@ export class PlayerController {
     let numplanes = 0
     originalVel.copy(this.vel)
     primalVel.copy(this.vel)
+    startMovePos.copy(this.pos)
+    lastBlocker.set(0, 0, 0)
 
     for (let bump = 0; bump < 4; bump++) {
       if (this.vel.lengthSq() === 0) break
 
       moveEnd.copy(this.pos).addScaledVector(this.vel, timeLeft)
       traceHull(this.pos, moveEnd, this.half, brushes, tr)
+      if (tr.hit) lastBlocker.copy(tr.blockerNormal)
 
       if (this.recording) {
         if (tr.startSolid) this.diag.startSolid = true
@@ -309,6 +314,25 @@ export class PlayerController {
         this.stopReason = 'primal'
         break
       }
+    }
+
+    // Wedge guard. If the whole tick made essentially no progress while the hull
+    // still carries real speed, it is jammed: the swept move is fraction-0 bounded
+    // by a plane the rampbug redirect hid (a bevel or seam the hull is pressed
+    // against), so clipVelocity kept removing the wrong component and gravity plus
+    // air-accel pumped the velocity unbounded while the position froze. That is the
+    // apex/edge freeze a human hits riding up to the very top of a ramp: the speed
+    // readout climbs past anything while the player does not move. Clip the
+    // velocity against the real blocking plane so the hull sheds the into-blocker
+    // component and slides off next tick instead of accelerating in place.
+    if (
+      this.vel.lengthSq() > 10000 &&
+      this.pos.distanceToSquared(startMovePos) < 1 &&
+      lastBlocker.lengthSq() > 0.5
+    ) {
+      clipVelocity(this.vel, lastBlocker, clipped)
+      this.vel.copy(clipped)
+      this.stopReason = 'wedged'
     }
   }
 }

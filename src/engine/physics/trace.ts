@@ -10,6 +10,10 @@ const DIST_EPS = 0.03125
 // a crease (two-face ridge apex) drifts the hull a float-noise distance inside
 // both planes; without this the trace reports allSolid and the player freezes.
 const SOLID_EPS = 0.1
+// A bevel/seam at or above this normal.y is cap-like (a near horizontal Minkowski
+// roof over a convex apex), not wall-like. The rampbug redirect leaves those
+// alone so the hull clips against them and rides along the crest; see below.
+const CAP_NORMAL_Y = 0.7
 
 export interface TraceResult {
   fraction: number
@@ -20,6 +24,10 @@ export interface TraceResult {
   // the chosen contact plane was a seam cap. Diagnostic only (the anomaly
   // recorder classifies what a rider got stuck against); physics ignores it.
   hitSeam: boolean
+  // the plane that actually limited the sweep fraction, BEFORE the rampbug
+  // redirect moved the clip normal to a real face. This is the surface the hull
+  // is physically jammed against; tryPlayerMove uses it to unstick a wedge.
+  blockerNormal: THREE.Vector3
   startSolid: boolean
   allSolid: boolean
 }
@@ -32,6 +40,7 @@ export function createTraceResult(): TraceResult {
     hit: false,
     hitBevel: false,
     hitSeam: false,
+    blockerNormal: new THREE.Vector3(),
     startSolid: false,
     allSolid: false,
   }
@@ -51,6 +60,7 @@ export function traceHull(
   out.hit = false
   out.hitBevel = false
   out.hitSeam = false
+  out.blockerNormal.set(0, 0, 0)
   out.startSolid = false
   out.allSolid = false
 
@@ -164,13 +174,26 @@ function clipToBrush(
     // above the faces (faceMaxD1 > 0.5) and the old guard let an apex edge bevel
     // through as a wall. Reporting the nearest real face is correct on the
     // surface and above it (the rider is landing onto that face); the gate is gone.
+    //
+    // The redirect must NOT fire for a cap-like bevel, though: a near horizontal
+    // Minkowski roof over the apex (normal.y >= CAP_NORMAL_Y) is the local floor
+    // the hull rests on when it is balanced on the ridge crest. Redirecting that
+    // to a steep side face leaves the downward (into-cap) velocity unclipped, so
+    // the hull presses into the cap, the swept move stays bevel-bounded at
+    // fraction 0, and tryPlayerMove pumps velocity unbounded while the position
+    // is frozen (the apex freeze a human hits riding up to the very top). Clipping
+    // against the cap instead sheds the into-cap component, so the hull rides
+    // along the crest. Only steep, across-course bevels/seams are wall-like.
     const p = planes[chosen]
-    const wallLike = p.seam === true || p.bevel === true
+    const wallLike = (p.seam === true || p.bevel === true) && p.n.y < CAP_NORMAL_Y
     if (wallLike && nearestFace >= 0) {
       chosen = nearestFace
     }
     out.fraction = enterFrac
     out.normal.copy(planes[chosen].n)
+    // the real fraction-limiting plane, before the redirect: what the hull is
+    // physically jammed against if it cannot move
+    out.blockerNormal.copy(planes[clipPlane].n)
     out.hit = true
     out.hitBevel = planes[chosen].bevel === true
     out.hitSeam = planes[chosen].seam === true

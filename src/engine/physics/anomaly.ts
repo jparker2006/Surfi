@@ -23,9 +23,14 @@ import { consts } from './constants'
 //      grounding-plus-friction crawl or a strafe-in hold at the apex; g catches
 //      those. A decaying recentPeak gates out a standstill (the spawn platform):
 //      the stick is always preceded by real surf speed.
-// e..g are evaluated before a..d so the more specific apex/steep/held stick is
-// the label when one fires; they are what humans hit and the clean/sloppy bots
-// miss.
+//   h. apex freeze: near-zero positional progress while moving fast and in
+//      contact. When the hull wedges on a convex crest, tryPlayerMove makes no
+//      progress yet velocity is pumped unbounded, so the position is frozen while
+//      the speed readout climbs. a..g all miss it (they look for slow or dropping
+//      speed); h watches displacement, not speed.
+// e..h are evaluated before a..d so the more specific apex/steep/held/frozen
+// stick is the label when one fires; they are what humans hit and the
+// clean/sloppy bots miss.
 
 const RING = 180
 // detector g: consecutive held-slow ticks (about 0.6s at 64 tick) before it fires
@@ -38,6 +43,11 @@ const HELD_RECENT_PEAK = 400
 // plus friction crawl can take a couple of seconds to bleed out, and the detector
 // must still remember the player was fast when the held run finally completes.
 const HELD_DECAY = 0.997
+// detector h (apex freeze): per-tick travel below this while moving faster than
+// FROZEN_SPEED and in contact, for FROZEN_TICKS in a row, is a wedge
+const FROZEN_DIST = 1.0
+const FROZEN_SPEED = 200
+const FROZEN_TICKS = 8
 const SURF_NORMAL_Y = 0.7
 const MAX_DUMPS = 60
 // after a trigger, wait this many ticks before arming again, so a single trap
@@ -115,7 +125,7 @@ export interface AnomalyFrame {
 }
 
 export interface AnomalyDump {
-  trigger: 'speeddrop' | 'backdrift' | 'multiplane' | 'startsolid' | 'stuckhigh' | 'stuckonsteep' | 'heldhigh'
+  trigger: 'speeddrop' | 'backdrift' | 'multiplane' | 'startsolid' | 'stuckhigh' | 'stuckonsteep' | 'heldhigh' | 'frozen'
   seed: number
   atTickId: number
   // dist and alongVel at the trigger, the headline numbers for triage
@@ -133,7 +143,7 @@ export class AnomalyRecorder {
   // running tallies for the sweep gate, per detector. eyeclip counts ticks
   // where the camera eye sits inside (or within the near plane of) brush
   // geometry: the cause of the flash on the old pinned-against-a-wall trap.
-  readonly counts = { speeddrop: 0, backdrift: 0, multiplane: 0, startsolid: 0, stuckhigh: 0, stuckonsteep: 0, heldhigh: 0, eyeclip: 0 }
+  readonly counts = { speeddrop: 0, backdrift: 0, multiplane: 0, startsolid: 0, stuckhigh: 0, stuckonsteep: 0, heldhigh: 0, frozen: 0, eyeclip: 0 }
 
   private readonly ring: Frame[] = []
   private head = 0
@@ -148,6 +158,12 @@ export class AnomalyRecorder {
   // proves the player was surfing before the stall (so a standstill never fires)
   private heldStreak = 0
   private recentPeak = 0
+  // detector h state: a run of frozen ticks and the previous sampled position
+  private frozenStreak = 0
+  private prevPx = 0
+  private prevPy = 0
+  private prevPz = 0
+  private havePrevPos = false
 
   constructor() {
     for (let i = 0; i < RING; i++) this.ring.push(makeFrame())
@@ -163,6 +179,8 @@ export class AnomalyRecorder {
     this.trapCooldown = 0
     this.heldStreak = 0
     this.recentPeak = 0
+    this.frozenStreak = 0
+    this.havePrevPos = false
     this.dumps.length = 0
     this.counts.speeddrop = 0
     this.counts.backdrift = 0
@@ -171,6 +189,7 @@ export class AnomalyRecorder {
     this.counts.stuckhigh = 0
     this.counts.stuckonsteep = 0
     this.counts.heldhigh = 0
+    this.counts.frozen = 0
     this.counts.eyeclip = 0
   }
 
@@ -295,6 +314,29 @@ export class AnomalyRecorder {
       this.counts.heldhigh++
       if (this.trapCooldown === 0) {
         this.emit('heldhigh', alongVel, d.horizBefore, d.horizAfter, prog.dist)
+        this.trapCooldown = COOLDOWN
+      }
+    }
+
+    // h. apex freeze: the hull wedges and stops advancing while moving fast and
+    // in contact (the position is frozen but velocity is pumped). Watch travel.
+    let moved = Infinity
+    if (this.havePrevPos) {
+      const dx = controller.pos.x - this.prevPx
+      const dy = controller.pos.y - this.prevPy
+      const dz = controller.pos.z - this.prevPz
+      moved = Math.sqrt(dx * dx + dy * dy + dz * dz)
+    }
+    this.prevPx = controller.pos.x
+    this.prevPy = controller.pos.y
+    this.prevPz = controller.pos.z
+    this.havePrevPos = true
+    const frozenNow = inContact && moved < FROZEN_DIST && d.horizAfter > FROZEN_SPEED
+    this.frozenStreak = frozenNow ? this.frozenStreak + 1 : 0
+    if (this.frozenStreak === FROZEN_TICKS) {
+      this.counts.frozen++
+      if (this.trapCooldown === 0) {
+        this.emit('frozen', alongVel, d.horizBefore, d.horizAfter, prog.dist)
         this.trapCooldown = COOLDOWN
       }
     }
